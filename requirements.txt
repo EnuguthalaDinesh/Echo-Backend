@@ -38,5 +38,6 @@ python-multipart
 # -------------------------------------------------------------------
 pydantic
 email-validator
+httpx
 # Note: The specific 'bson' package entry is intentionally REMOVED 
 # to prevent conflict with the bson module provided by pymongo.
