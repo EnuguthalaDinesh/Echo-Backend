@@ -3,22 +3,24 @@
 # -------------------------------------------------------------------
 fastapi
 uvicorn[standard]
-gunicorn  # Recommended for production deployments like Render
+gunicorn
 
 # -------------------------------------------------------------------
 # DATABASE & CACHING (MongoDB and Redis)
 # -------------------------------------------------------------------
 motor
-redis[async]  # Use redis[async] or aioredis (aioredis is now just redis)
+redis[async] 
 
 # -------------------------------------------------------------------
 # AI & ML (Gemini and Hugging Face Transformers)
+# **CRITICAL: Ensure correct package name for the ModuleNotFoundError**
 # -------------------------------------------------------------------
-google-genai
+google-generativeai 
+google-api-core # Added for robust namespace loading
 transformers
 torch
-sentencepiece  # Required by some models used by transformers (e.g., BART)
-protobuf       # Common dependency for Google libraries
+sentencepiece
+protobuf
 
 # -------------------------------------------------------------------
 # AUTHENTICATION & SECURITY
@@ -27,12 +29,12 @@ passlib[bcrypt]
 python-jose[cryptography]
 authlib
 python-dotenv
-python-multipart  # For handling form data and file uploads
+python-multipart 
 
 # -------------------------------------------------------------------
 # UTILITIES & DATA (Required for Pydantic/Email/BSON)
 # -------------------------------------------------------------------
 pydantic
-email-validator  # Required for EmailStr in Pydantic models
-python-dotenv    # For os.getenv/load_dotenv
-bson             # For ObjectId handling (often pulled by motor, but good to list)
+email-validator
+# Note: python-dotenv is listed twice, keeping one
+bson
