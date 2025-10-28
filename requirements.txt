@@ -1,24 +1,26 @@
 # -------------------------------------------------------------------
-# CORE WEB FRAMEWORK & SERVER (Required for FastAPI/ASGI)
+# CORE WEB FRAMEWORK & SERVER
 # -------------------------------------------------------------------
 fastapi
 uvicorn[standard]
 gunicorn
 
 # -------------------------------------------------------------------
-# DATABASE & CACHING (MongoDB and Redis)
+# DATABASE & CACHING (Pinned for Stability with PyMongo/BSON)
+# Recommended stable versions for Python 3.10+ environments:
 # -------------------------------------------------------------------
-motor
+motor==3.1.2 
+pymongo==4.7.1  # Explicitly listed to control the BSON dependency version
 redis[async] 
 
 # -------------------------------------------------------------------
 # AI & ML (Gemini and Hugging Face Transformers)
-# **CRITICAL: Ensure correct package name for the ModuleNotFoundError**
+# **Fix for ModuleNotFoundError: 'google.generativeai'**
 # -------------------------------------------------------------------
-google-generativeai 
-google-api-core # Added for robust namespace loading
+google-generativeai # Correct package name for the Gemini SDK
+google-api-core     # Added for robust Google namespace loading
 transformers
-torch
+torch               # Requires a build environment with enough RAM
 sentencepiece
 protobuf
 
@@ -32,9 +34,9 @@ python-dotenv
 python-multipart 
 
 # -------------------------------------------------------------------
-# UTILITIES & DATA (Required for Pydantic/Email/BSON)
+# UTILITIES & DATA
 # -------------------------------------------------------------------
 pydantic
 email-validator
-# Note: python-dotenv is listed twice, keeping one
-bson
+# Note: The specific 'bson' package entry is intentionally REMOVED 
+# to prevent conflict with the bson module provided by pymongo.
