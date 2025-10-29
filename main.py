@@ -49,7 +49,7 @@ load_dotenv()
 # -------------------------
 # 🚨 CRITICAL FIX: Hardcode the production FRONTEND_ORIGIN to avoid the CORS wildcard conflict
 # ⚠️ Replace 'https://your-live-frontend-url.com' with your actual frontend URL (e.g., https://echo-frontend-drab.vercel.app/)
-FRONTEND_ORIGIN = "echo-frontend-2d4z.vercel.app" 
+FRONTEND_ORIGIN = "https://echo-frontend-2d4z.vercel.app" 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://echo-backend-1-ubeb.onrender.com")
 
 # -------------------------
