@@ -7,9 +7,13 @@ motor
 passlib[bcrypt]
 python-jose[cryptography]
 redis
-google-genai
+# CHANGE: Ensure the package name is google-generativeai 
+# or verify that google-genai works and your code uses the new path.
+google-generativeai  # <-- Use this name to match your code's import
 transformers
 torch
 authlib
 httpx
 email-validator
+# Add aiohttp for robust async network calls if needed
+aiohttp
