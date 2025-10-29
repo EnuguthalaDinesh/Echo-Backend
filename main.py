@@ -4,11 +4,11 @@ import json
 import logging
 import asyncio
 import re
-import smtplib # NEW: For mocking email
+import smtplib
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple, Dict, Union 
-from email.mime.text import MIMEText # NEW: For constructing the email body
-from email.utils import formataddr # NEW: For constructing a proper 'From' header
+from email.mime.text import MIMEText
+from email.utils import formataddr
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, status, Body, Request, WebSocket, WebSocketDisconnect
@@ -32,8 +32,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 # --- Redis (async) ---
 import redis.asyncio as aioredis
 
-# --- Transformers (sentiment + zero-shot intent) ---
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+# --- Removed: Transformers (sentiment + zero-shot intent) ---
+# Importing AutoTokenizer, AutoModelForSequenceClassification, pipeline is removed.
+# This eliminates the dependency and memory footprint of the NLP models.
 
 # --- OAuth (Google + GitHub) ---
 from authlib.integrations.starlette_client import OAuth
@@ -52,7 +53,7 @@ FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "https://echo-frontend-drab.verce
 API_BASE_URL = os.getenv("API_BASE_URL", "https://echo-backend-rv3o.onrender.com")
 
 # -------------------------
-# NEW: Email Configuration
+# Email Configuration
 # -------------------------
 SMTP_SERVER = os.getenv("SMTP_SERVER")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
@@ -272,33 +273,14 @@ async def _call_gemini(prompt_text: str, *, temperature: float = 0.7, max_output
         return "Sorry, I am unable to process your request now."
 
 # -------------------------
-# Transformers Pipelines
+# Transformers Pipelines (REMOVED: Now using heuristics/Gemini only)
 # -------------------------
-sentiment_analyzer = None
-zero_shot_classifier = None
+sentiment_analyzer = None # CRITICAL: This bypasses memory-heavy model loading
+zero_shot_classifier = None # CRITICAL: This bypasses memory-heavy model loading
 INTENT_LABELS = ["general", "technical", "finance", "travel"]
 ZERO_SHOT_THRESHOLD = float(os.getenv("ZERO_SHOT_THRESHOLD", "0.55"))
 
-try:
-    # Sentiment
-    s_tok = AutoTokenizer.from_pretrained("distilbert-base-uncased-finetuned-sst-2-english")
-    s_model = AutoModelForSequenceClassification.from_pretrained("distilbert-base-uncased-finetuned-sst-2-english")
-    sentiment_analyzer = pipeline("sentiment-analysis", model=s_model, tokenizer=s_tok)
-    logging.info("✅ Sentiment model ready.")
-except Exception as e:
-    logging.warning(f"Sentiment model unavailable; using heuristics. Reason: {e}")
-    sentiment_analyzer = None
-
-try:
-    # Zero-shot (intent)
-    try:
-        zero_shot_classifier = pipeline("zero-shot-classification", model="typeform/distilbert-base-uncased-mnli")
-    except Exception:
-        zero_shot_classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
-    logging.info("✅ Zero-shot intent classifier ready.")
-except Exception as e:
-    logging.warning(f"Zero-shot intent classifier unavailable; will use Gemini/rules. Reason: {e}")
-    zero_shot_classifier = None
+logging.info("ℹ️ Local ML models disabled to meet 512MiB memory limit. Using heuristics and Gemini API.")
 
 # -------------------------
 # Domain Knowledge Base (In-Memory Fallback)
@@ -321,19 +303,13 @@ except FileNotFoundError:
 # -------------------------
 
 def analyze_sentiment(text: str) -> str:
-    if sentiment_analyzer is None:
-        t = text.lower()
-        if any(w in t for w in ["not working", "frustrated", "annoyed", "unhappy", "bad", "terrible"]):
-            return "NEGATIVE"
-        if any(w in t for w in ["thank you", "resolved", "great", "happy", "good", "excellent"]):
-            return "POSITIVE"
-        return "NEUTRAL"
-    try:
-        result = sentiment_analyzer(text[:512])[0]
-        return result["label"].upper()
-    except Exception as e:
-        logging.warning(f"Sentiment failed: {e}")
-        return "NEUTRAL"
+    # Since sentiment_analyzer is None, this will always use the keyword fallback.
+    t = text.lower()
+    if any(w in t for w in ["not working", "frustrated", "annoyed", "unhappy", "bad", "terrible", "issue", "problem"]):
+        return "NEGATIVE"
+    if any(w in t for w in ["thank you", "resolved", "great", "happy", "good", "excellent", "thanks"]):
+        return "POSITIVE"
+    return "NEUTRAL"
 
 def _keyword_intent(text: str) -> Tuple[str, float, str]:
     t = text.lower()
@@ -347,19 +323,12 @@ def _keyword_intent(text: str) -> Tuple[str, float, str]:
 
 async def classify_intent(text: str) -> Tuple[str, float, str]:
     """
-    Returns (predicted_domain, confidence[0..1], source['zero-shot'|'gemini'|'rules'])
+    Returns (predicted_domain, confidence[0..1], source['gemini'|'rules'])
+    The zero-shot path is intentionally removed to save memory.
     """
-    # 1) Zero-shot (local)
-    if zero_shot_classifier is not None:
-        try:
-            res = zero_shot_classifier(text, INTENT_LABELS, multi_label=False)
-            label = res["labels"][0].lower()
-            score = float(res["scores"][0])
-            return (label, score, "zero-shot")
-        except Exception as e:
-            logging.warning(f"Zero-shot intent failed: {e}")
+    # 1) Zero-shot (local) - SKIP
 
-    # 2) Gemini
+    # 2) Gemini (Remote AI)
     if gemini_api_key:
         prompt = (
             "You are an intent classifier. Classify the user query into EXACTLY ONE of these domains: "
@@ -377,7 +346,7 @@ async def classify_intent(text: str) -> Tuple[str, float, str]:
             return ("travel", 0.6, "gemini")
         return ("general", 0.6, "gemini")
 
-    # 3) Rules
+    # 3) Rules (Fallback)
     return _keyword_intent(text)
 
 async def get_history_answer(user_query: str) -> Optional[str]:
@@ -670,7 +639,7 @@ async def add_message_to_ticket(ticket_id: str, message: str, role: str) -> bool
         logging.error(f"Failed to add message to ticket: {e}")
         return False
 
-# NEW: Helper function to get ticket details (used for email context)
+# Helper function to get ticket details (used for email context)
 async def get_ticket(ticket_id: str) -> Optional[Dict]:
     col = getattr(app.state, "tickets_collection", None)
     if col is None:
@@ -687,7 +656,7 @@ async def get_ticket(ticket_id: str) -> Optional[Dict]:
         logging.error(f"Error fetching ticket for email context: {e}")
         return None
     
-# NEW: Helper function to get customer email
+# Helper function to get customer email
 async def get_customer_email(customer_id: str) -> Tuple[Optional[str], Optional[str]]:
     """Retrieves customer email and name from the users collection."""
     col = getattr(app.state, "users_collection", None)
@@ -709,7 +678,7 @@ async def get_customer_email(customer_id: str) -> Tuple[Optional[str], Optional[
         logging.error(f"Error fetching customer email for ID {customer_id}: {e}")
         return None, None
 
-# NEW: Async Email Sending Function (MOCK)
+# Async Email Sending Function (MOCK)
 async def send_email_notification(to_email: str, subject: str, body: str):
     """
     MOCK function to simulate sending an email.
@@ -1095,7 +1064,7 @@ SENSITIVE_FINANCE_PATTERN = re.compile(
 )
 
 # -------------------------
-# NEW: Role Assignment Logic (Refined)
+# Role Assignment Logic (Refined)
 # -------------------------
 def assign_role_by_name(name: str) -> str:
     """Assigns role based on name pattern: 'admin' if name contains 'admin', 'agent' if name contains 'agent', otherwise 'user'."""
@@ -1232,7 +1201,7 @@ async def save_case_message(col, case_id, case_doc, user_msg, bot_msg, escalated
     logging.info(f"🔄 Case updated/created in MongoDB: {case_id}")
 
 # -------------------------
-# NEW: Save single chat messages into chat_history collection 
+# Save single chat messages into chat_history collection 
 # -------------------------
 async def save_chat_history_message(session_id: str, role: str, content: str, meta: Optional[Dict] = None):
     """
@@ -1255,7 +1224,7 @@ async def save_chat_history_message(session_id: str, role: str, content: str, me
         logging.warning(f"Failed to save chat history message: {e}")
 
 # -------------------------
-# History Endpoints (NEW)
+# History Endpoints
 # -------------------------
 
 @app.get("/history", response_model=List[HistoryMessage])
@@ -1461,7 +1430,7 @@ async def update_ticket_status(
         raise HTTPException(status_code=500, detail="Error updating ticket status.")
 
 # ----------------------------------------
-# ADMIN DASHBOARD ENDPOINTS (NEW)
+# ADMIN DASHBOARD ENDPOINTS
 # ----------------------------------------
 
 @app.get("/admin/metrics")
@@ -1594,7 +1563,8 @@ async def chat_interaction(
         return ChatResponse(bot_response=bot_response, case_status="blocked")
 
     # 1. Analyze Sentiment
-    sentiment = analyze_sentiment(user_query)
+    # Uses keyword heuristic since sentiment_analyzer is None
+    sentiment = analyze_sentiment(user_query) 
     
     # 2. Check Global History Cache (first-pass resolution)
     cached_answer = await get_history_answer(user_query)
@@ -1612,7 +1582,8 @@ async def chat_interaction(
         )
         
     # 3. Classify Intent/Domain
-    predicted_domain, confidence, source = await classify_intent(user_query)
+    # Uses Gemini or keyword rules since zero_shot_classifier is None
+    predicted_domain, confidence, source = await classify_intent(user_query) 
     
     # 4. Check for Critical/Urgent Issues
     is_critical = check_critical_issue(user_query, sentiment)
