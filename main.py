@@ -33,8 +33,6 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import redis.asyncio as aioredis
 
 # --- Removed: Transformers (sentiment + zero-shot intent) ---
-# Importing AutoTokenizer, AutoModelForSequenceClassification, pipeline is removed.
-# This eliminates the dependency and memory footprint of the NLP models.
 
 # --- OAuth (Google + GitHub) ---
 from authlib.integrations.starlette_client import OAuth
@@ -49,8 +47,10 @@ load_dotenv()
 # -------------------------
 # Config
 # -------------------------
-FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "https://echo-frontend-drab.vercel.app/")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://echo-backend-rv3o.onrender.com")
+# 🚨 CRITICAL FIX: Hardcode the production FRONTEND_ORIGIN to avoid the CORS wildcard conflict
+# ⚠️ Replace 'https://your-live-frontend-url.com' with your actual frontend URL (e.g., https://echo-frontend-drab.vercel.app/)
+FRONTEND_ORIGIN = "echo-frontend-drab.vercel.app" 
+API_BASE_URL = os.getenv("API_BASE_URL", "https://echo-backend-1-ubeb.onrender.com")
 
 # -------------------------
 # Email Configuration
