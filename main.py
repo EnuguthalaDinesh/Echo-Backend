@@ -47,9 +47,8 @@ load_dotenv()
 # -------------------------
 # Config
 # -------------------------
-# 🚨 CRITICAL FIX: Hardcode the production FRONTEND_ORIGIN to avoid the CORS wildcard conflict
-# ⚠️ Replace 'https://your-live-frontend-url.com' with your actual frontend URL (e.g., https://echo-frontend-drab.vercel.app/)
-FRONTEND_ORIGIN = "https://echo-frontend-2d4z.vercel.app" 
+# 🚨 CRITICAL FIX: The full HTTPS protocol must be included for CORS compliance.
+VERCEL_FRONTEND_ORIGIN = "https://echo-frontend-2d4z.vercel.app" 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://echo-backend-1-ubeb.onrender.com")
 
 # -------------------------
@@ -719,8 +718,14 @@ app = FastAPI(
 )
 
 # --- FIX: ROBUST CORS CONFIGURATION ---
-# Use FRONTEND_ORIGIN if set, otherwise use wildcard for local development testing
-ALLOWED_ORIGINS = [FRONTEND_ORIGIN] if FRONTEND_ORIGIN and FRONTEND_ORIGIN != "http://localhost:5173" else ["http://localhost:5173", "http://127.0.0.1:5173", "*"]
+# Define ALL allowed origins explicitly: Vercel live URL + local dev URLs.
+# This prevents the illegal use of "*" with allow_credentials=True.
+ALLOWED_ORIGINS = [
+    VERCEL_FRONTEND_ORIGIN,
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8000" # Include common local backend port just in case
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -993,7 +998,8 @@ oauth.register(
 )
 
 def _frontend_redirect_with_token_cookie(token: str) -> RedirectResponse:
-    url = f"{FRONTEND_ORIGIN}/auth/callback"
+    # Use the hardcoded/fixed VERCEL_FRONTEND_ORIGIN here
+    url = f"{VERCEL_FRONTEND_ORIGIN}/auth/callback" 
     resp = RedirectResponse(url=url, status_code=302)
     resp.set_cookie(
         "access_token", token,
