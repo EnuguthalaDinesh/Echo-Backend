@@ -5,6 +5,7 @@ import logging
 import asyncio
 import re
 import smtplib
+import bcrypt # <-- ADDED: bcrypt library
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple, Dict, Union 
 from email.mime.text import MIMEText
@@ -25,7 +26,7 @@ import motor.motor_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # --- Passwords / JWT ---
-from passlib.context import CryptContext
+# REMOVED: from passlib.context import CryptContext
 from jose import JWTError, jwt
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -75,19 +76,43 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 # -------------------------
 # Password Hashing & JWT
 # -------------------------
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# REMOVED: pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-for-jwt")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "14"))
 
+# --- START: UPDATED PASSWORD FUNCTIONS ---
 def verify_password(plain_password: str, hashed_password: Optional[str]) -> bool:
     if not hashed_password:
         return False
-    return pwd_context.verify(plain_password, hashed_password)
-
+        
+    try:
+        # **CRITICAL FIX (72-byte limit):** Encode and Truncate the plain password
+        plain_password_bytes = plain_password.encode('utf-8')[:72]
+        # Encode the stored hash string back to bytes for comparison
+        hashed_password_bytes = hashed_password.encode('utf-8')
+        
+        # Use bcrypt.checkpw to safely compare
+        return bcrypt.checkpw(plain_password_bytes, hashed_password_bytes)
+    except ValueError as e:
+        # Catch errors like invalid hash format or internal bcrypt issues
+        logging.error(f"Password verification failed: {e}")
+        return False
+        
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    # **CRITICAL FIX (72-byte limit):** Encode and Truncate the password
+    password_bytes = password.encode('utf-8')[:72]
+    
+    # Hash the truncated password bytes
+    hashed_password_bytes = bcrypt.hashpw(
+        password_bytes, 
+        bcrypt.gensalt() # Generates a new random salt
+    )
+    
+    # Return the result decoded to a string for storage
+    return hashed_password_bytes.decode('utf-8')
+# --- END: UPDATED PASSWORD FUNCTIONS ---
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
@@ -1137,6 +1162,8 @@ async def register(user: UserRegister):
 @app.post("/login")
 async def login(request: LoginRequest):
     user = await get_user_by_email_mongo(request.email)
+    
+    # This call now uses the new verify_password with 72-byte truncation
     if not user or not user.get("hashed_password") or not verify_password(request.password, user.get("hashed_password")):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     

@@ -1,19 +1,15 @@
-# requirements.txt
 fastapi
 uvicorn
 python-dotenv
 pydantic
 motor
-passlib[bcrypt]
+bcrypt                # <-- CHANGE: Use bcrypt directly
 python-jose[cryptography]
 redis
-# CHANGE: Ensure the package name is google-generativeai 
-# or verify that google-genai works and your code uses the new path.
-google-generativeai  # <-- Use this name to match your code's import
+google-generativeai
 transformers
 torch
 authlib
 httpx
 email-validator
-# Add aiohttp for robust async network calls if needed
 aiohttp
