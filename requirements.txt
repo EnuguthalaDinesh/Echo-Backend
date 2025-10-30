@@ -1,9 +1,9 @@
 fastapi
-uvicorn
+uvicorn[standard]     # <-- FIX: Added [standard] for WebSocket support
 python-dotenv
 pydantic
 motor
-bcrypt                # <-- CHANGE: Use bcrypt directly
+bcrypt
 python-jose[cryptography]
 redis
 google-generativeai
