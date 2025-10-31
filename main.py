@@ -4,12 +4,15 @@ import json
 import logging
 import asyncio
 import re
-import smtplib
-import bcrypt # <-- ADDED: bcrypt library
+# REMOVED: import smtplib
+import bcrypt 
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple, Dict, Union 
-from email.mime.text import MIMEText
-from email.utils import formataddr
+# REMOVED: from email.mime.text import MIMEText
+# REMOVED: from email.utils import formataddr
+
+# --- ADDED FOR EMAILJS API ---
+import httpx 
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, status, Body, Request, WebSocket, WebSocketDisconnect
@@ -26,14 +29,11 @@ import motor.motor_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # --- Passwords / JWT ---
-# REMOVED: from passlib.context import CryptContext
 from jose import JWTError, jwt
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # --- Redis (async) ---
 import redis.asyncio as aioredis
-
-# --- Removed: Transformers (sentiment + zero-shot intent) ---
 
 # --- OAuth (Google + GitHub) ---
 from authlib.integrations.starlette_client import OAuth
@@ -48,19 +48,24 @@ load_dotenv()
 # -------------------------
 # Config
 # -------------------------
-# 🚨 CRITICAL FIX: The full HTTPS protocol must be included for CORS compliance.
 VERCEL_FRONTEND_ORIGIN = "https://echo-frontend-2d4z.vercel.app" 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://echo-backend-1-ubeb.onrender.com")
 
 # -------------------------
-# Email Configuration
+# Email Configuration (Updated for EmailJS)
 # -------------------------
-SMTP_SERVER = os.getenv("SMTP_SERVER")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USERNAME = os.getenv("SMTP_USERNAME")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+# OLD SMTP VARS ARE NO LONGER USED. New vars are defined below.
+# Setting fixed sender name globally
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "support@yourcompany.com")
-SENDER_NAME = os.getenv("SENDER_NAME", "Customer Support")
+SENDER_NAME = os.getenv("SENDER_NAME", "echo-mid")
+
+# EmailJS Specific Config
+EMAILJS_API_URL = "https://api.emailjs.com/api/v1.0/email/send"
+EMAILJS_SERVICE_ID = os.getenv("EMAILJS_SERVICE_ID") 
+EMAILJS_TEMPLATE_ID_FINAL = os.getenv("EMAILJS_TEMPLATE_ID_FINAL") 
+EMAILJS_PUBLIC_KEY = os.getenv("EMAILJS_PUBLIC_KEY") 
+EMAILJS_PRIVATE_KEY = os.getenv("EMAILJS_PRIVATE_KEY") 
+
 
 # -------------------------
 # MongoDB
@@ -76,7 +81,6 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 # -------------------------
 # Password Hashing & JWT
 # -------------------------
-# REMOVED: pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-for-jwt")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
@@ -88,29 +92,20 @@ def verify_password(plain_password: str, hashed_password: Optional[str]) -> bool
         return False
         
     try:
-        # **CRITICAL FIX (72-byte limit):** Encode and Truncate the plain password
         plain_password_bytes = plain_password.encode('utf-8')[:72]
-        # Encode the stored hash string back to bytes for comparison
         hashed_password_bytes = hashed_password.encode('utf-8')
-        
-        # Use bcrypt.checkpw to safely compare
         return bcrypt.checkpw(plain_password_bytes, hashed_password_bytes)
     except ValueError as e:
-        # Catch errors like invalid hash format or internal bcrypt issues
         logging.error(f"Password verification failed: {e}")
         return False
         
 def get_password_hash(password: str) -> str:
-    # **CRITICAL FIX (72-byte limit):** Encode and Truncate the password
     password_bytes = password.encode('utf-8')[:72]
     
-    # Hash the truncated password bytes
     hashed_password_bytes = bcrypt.hashpw(
         password_bytes, 
         bcrypt.gensalt() # Generates a new random salt
     )
-    
-    # Return the result decoded to a string for storage
     return hashed_password_bytes.decode('utf-8')
 # --- END: UPDATED PASSWORD FUNCTIONS ---
 
@@ -182,9 +177,8 @@ async def get_current_admin(current_user: Optional[Dict] = Depends(get_current_u
     return current_user # Return the user object if authorized
 
 
-# EXPANDED LIST for all domain critical words (used by check_critical_issue)
 CRITICAL_KEYWORDS = [
-    # --- General Inquiry (Extreme Urgency & Emotional Distress/Legal) ---
+    # ... (CRITICAL_KEYWORDS list remains unchanged)
     "urgent", "critical", "immediate action", "ASAP", "emergency", "crisis",
     "angry", "furious", "outraged", "unacceptable", "fuming", "highly dissatisfied", 
     "stuck", "stranded", "trapped", "cannot proceed", "must resolve now",
@@ -192,24 +186,18 @@ CRITICAL_KEYWORDS = [
     "threaten", "lawsuit", "legal action", "contacting my lawyer", 
     "media", "public complaint", "escalate to management", 
     "unresponsive", "lied to",
-    
-    # --- Technical (System Failure, Security, and Data Integrity) ---
     "not working", "completely down", "system failure", "major outage", "global outage", 
     "broken", "crashed", "frozen", "inoperable", "unresponsive", "unusable", "malfunction",
     "error 500", "fatal error", "critical bug", "server error", "API failure", "network down",
     "can't connect", "no access", "locked out", "system exploited",
     "data loss", "deleted", "corrupted", "lost all my progress", "data breach", "data leak",
     "denial of service", "DDoS", "virus", "malware",
-    
-    # --- Finance (Fraud, Loss of Funds, and High-Value Disputes) ---
     "fraud", "scam", "money lost", "loss of funds", "stolen", "dispute charge", 
     "unauthorized payment", "unauthorized transaction", "immediate refund", 
     "overcharged", "excessive fee", "billing error", "incorrect statement",
     "identity theft", "account compromise", "frozen account", "locked funds",
     "transfer failed", "payment bounced", "repossession", "foreclosure",
     "close credit card", "cancel payment", "tax issue", "IRS",
-    
-    # --- Travel (Physical Safety, Severe Disruption, and Access Issues) ---
     "missed flight", "stuck at airport", "cannot board", "denied boarding", "no record of reservation",
     "visa rejected", "customs issue", "immigration problem", "denied entry", "deportation",
     "illness", "injury", "medical emergency", "police involved",
@@ -702,36 +690,59 @@ async def get_customer_email(customer_id: str) -> Tuple[Optional[str], Optional[
         logging.error(f"Error fetching customer email for ID {customer_id}: {e}")
         return None, None
 
-# Async Email Sending Function (MOCK)
-async def send_email_notification(to_email: str, subject: str, body: str):
+# Async Email Sending Function (REAL IMPLEMENTATION using EmailJS API)
+async def send_email_notification(
+    to_email: str, 
+    subject: str, 
+    body: str, 
+    customer_name: Optional[str] = None, 
+    is_resolution: bool = False 
+):
     """
-    MOCK function to simulate sending an email.
-    In a real application, this would use a library like aiosmtplib.
+    Sends an email via the EmailJS REST API using the Resolution template.
+    Since we are enforcing a single message, we always use the final resolution template.
     """
-    if not all([SMTP_SERVER, SMTP_USERNAME, SMTP_PASSWORD]):
-        logging.warning("Email configuration missing. Cannot send email notification.")
+    if not all([EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID_FINAL, EMAILJS_PUBLIC_KEY, EMAILJS_PRIVATE_KEY]):
+        logging.warning("EmailJS configuration incomplete. Cannot send email.")
         return False
 
-    # --- Real SMTP Logic (Conceptual) ---
-    try:
-        msg = MIMEText(body)
-        msg['Subject'] = subject
-        msg['From'] = formataddr((SENDER_NAME, SENDER_EMAIL))
-        msg['To'] = to_email
+    # 1. Build dynamic template parameters (Must match EmailJS template placeholders!)
+    template_params = {
+        "to_email": to_email,
+        "customer_name": customer_name or "Customer",
+        "ticket_subject": subject,
+        # Use the fixed SENDER_NAME "echo-mid" for the agent name
+        "agent_name": SENDER_NAME, 
+        "message_body": body, 
+        "from_email": SENDER_EMAIL
+    }
 
-        # NOTE: This block is a MOCK. Replace with real aiosmtplib or ESP code.
-        # import aiosmtplib
-        # smtp = aiosmtplib.SMTP(hostname=SMTP_SERVER, port=SMTP_PORT, use_tls=True)
-        # await smtp.connect()
-        # await smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
-        # await smtp.send_message(msg)
-        # await smtp.quit()
-        
-        logging.info(f"MOCK SUCCESS: Email triggered to {to_email} for subject: {subject[:50]}...")
-        logging.debug(f"Email Body: {body[:100]}...")
-        return True
+    # 2. Construct the API payload
+    payload = {
+        "service_id": EMAILJS_SERVICE_ID,
+        "template_id": EMAILJS_TEMPLATE_ID_FINAL, # Always use the single resolution template
+        "user_id": EMAILJS_PUBLIC_KEY,
+        "accessToken": EMAILJS_PRIVATE_KEY, # Secure Private Key for server-side
+        "template_params": template_params
+    }
+    
+    try:
+        # Use httpx to make an asynchronous POST request
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                EMAILJS_API_URL, 
+                json=payload
+            )
+
+        if response.status_code == 200 and response.text == "OK":
+            logging.info(f"✅ SUCCESS: Email sent via EmailJS API. Template: {EMAILJS_TEMPLATE_ID_FINAL}")
+            return True
+        else:
+            logging.error(f"EmailJS API Failed. Status: {response.status_code}, Response: {response.text}")
+            return False
+
     except Exception as e:
-        logging.error(f"Failed to send email to {to_email}: {e}")
+        logging.error(f"HTTP Error calling EmailJS: {e}")
         return False
         
 # -------------------------
@@ -743,13 +754,11 @@ app = FastAPI(
 )
 
 # --- FIX: ROBUST CORS CONFIGURATION ---
-# Define ALL allowed origins explicitly: Vercel live URL + local dev URLs.
-# This prevents the illegal use of "*" with allow_credentials=True.
 ALLOWED_ORIGINS = [
     VERCEL_FRONTEND_ORIGIN,
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "http://localhost:8000" # Include common local backend port just in case
+    "http://localhost:8000"
 ]
 
 app.add_middleware(
@@ -786,7 +795,6 @@ class ChatMessage(BaseModel):
     content: str
     timestamp: str
 
-# 👇 NEW MODEL FOR HISTORY ENDPOINT 👇
 class HistoryMessage(BaseModel):
     session_id: str
     role: str
@@ -824,8 +832,10 @@ class TicketCreate(BaseModel):
     subject: str
     description: Optional[str] = None
 
-class TicketStatusUpdate(BaseModel):
-    status: str
+# MODIFIED: Model to include the final resolution message
+class TicketResolution(BaseModel):
+    status: str = Field(..., description="Must be 'resolved' to include resolution_message.")
+    resolution_message: Optional[str] = Field(None, description="The final message sent to the customer explaining the resolution.")
 
 class HistorySummaryResponse(BaseModel):
     session_id: str
@@ -836,10 +846,10 @@ class NewFaqEntry(BaseModel):
     keywords: List[str]
     answer: str
 
-# NEW: Model for agent responses
-class AgentMessage(BaseModel):
-    message: str
-    role: str # Should be 'agent'
+# REMOVED: Model for agent messages (no separate chat messages allowed)
+# class AgentMessage(BaseModel):
+#     message: str
+#     role: str 
 
 # NEW: Model for Admin User List
 class AdminUserResponse(BaseModel):
@@ -880,7 +890,7 @@ async def on_startup():
             app.state.chatbot_db = default_db if default_db is not None else app.state.mongo_client["chatbot"]
             
             # --- Mongo Collections for migrated data ---
-            app.state.users_collection = app.state.chatbot_db["users"]  
+            app.state.users_collection = app.state.chatbot_db["users"] 
             app.state.tickets_collection = app.state.chatbot_db["tickets"] 
             
             # --- Existing Mongo Collections ---
@@ -1341,47 +1351,10 @@ async def get_all_open_tickets(
         raise HTTPException(status_code=500, detail="Error fetching tickets.")
 
 
-@app.post("/tickets/{ticket_id}/message")
-async def post_ticket_message(
-    ticket_id: str, 
-    message_data: AgentMessage,
-    current_user: Dict = Depends(get_current_agent_or_admin)
-):
-    """Allows an agent to post a message to a ticket and attempts email notification."""
-    
-    # 1. Add message to the ticket
-    success = await add_message_to_ticket(ticket_id, message_data.message, message_data.role)
-    
-    if not success:
-        raise HTTPException(status_code=404, detail="Ticket not found or update failed.")
-    
-    # 2. Fetch ticket and customer details
-    ticket_doc = await get_ticket(ticket_id)
-    if not ticket_doc:
-        logging.error(f"Post message: Ticket not found for ID {ticket_id} after update.")
-        return {"message": "Reply added successfully, but failed to find ticket for email lookup.", "ticket_id": ticket_id, "ok": True}
-        
-    customer_id = ticket_doc.get("customer_id")
-    customer_email, customer_name = await get_customer_email(customer_id)
-    
-    # 3. Dispatch Email Notification
-    if customer_email:
-        subject = f"Reply to your ticket: {ticket_doc.get('subject', f'Ticket ID: {ticket_id}')}"
-        body = (
-            f"Dear {customer_name or 'Customer'},\n\n"
-            f"Our agent, {current_user.get('name', 'Support Agent')}, has replied to your ticket ({ticket_id[:8]}):\n\n"
-            f"--- Agent Reply ---\n"
-            f"{message_data.message}\n"
-            f"-------------------\n\n"
-            "If you need further assistance, please reply to this email to update your ticket.\n\n"
-            f"Regards,\n{SENDER_NAME} Team"
-        )
-        # Dispatch Email (non-blocking)
-        asyncio.create_task(send_email_notification(customer_email, subject, body))
-    else:
-        logging.warning(f"Could not send reply email: Customer email not found for ticket {ticket_id}.")
-        
-    return {"message": "Reply added successfully and email triggered.", "ticket_id": ticket_id, "ok": True}
+# REMOVED: This endpoint is now removed as per the requirement for a single resolution message
+# @app.post("/tickets/{ticket_id}/message")
+# async def post_ticket_message(...): 
+#    pass
 
 
 @app.post("/tickets", status_code=status.HTTP_201_CREATED)
@@ -1409,7 +1382,7 @@ async def get_ticket_endpoint(ticket_id: str):
 @app.put("/tickets/{ticket_id}/status")
 async def update_ticket_status(
     ticket_id: str, 
-    update: TicketStatusUpdate,
+    update: TicketResolution, # <-- Using the model with the message field
     current_user: Dict = Depends(get_current_agent_or_admin) 
 ):
     col = getattr(app.state, "tickets_collection", None)
@@ -1418,39 +1391,55 @@ async def update_ticket_status(
     
     new_status = update.status.lower()
     
+    # Validation: Resolution message is required when resolving a ticket
+    if new_status == "resolved" and not update.resolution_message:
+        raise HTTPException(status_code=400, detail="Resolution message is required when marking a ticket as 'resolved'.")
+        
     try:
-        # Determine the query ID
         is_valid_object_id = len(ticket_id) == 24 and ObjectId.is_valid(ticket_id)
         query_id = ObjectId(ticket_id) if is_valid_object_id else ticket_id
 
-        # Check if the ticket exists and update its status
+        # Prepare update operation
+        update_op = {"$set": {"status": new_status, "updated_at": datetime.utcnow()}}
+
+        # If resolved, add the agent's final message to the conversation history
+        if new_status == "resolved" and update.resolution_message:
+            # 1. Record the agent's message in the ticket history
+            agent_message = {
+                "role": "agent",
+                "content": update.resolution_message,
+                "timestamp": datetime.utcnow(),
+                "meta": {"type": "Resolution"}
+            }
+            update_op["$push"] = {"conversation_history": agent_message}
+            
         update_result = await col.update_one(
             {"$or": [{"_id": query_id}, {"id": ticket_id}]},
-            {"$set": {"status": new_status, "updated_at": datetime.utcnow()}}
+            update_op
         )
 
         if update_result.matched_count == 0:
             raise HTTPException(status_code=404, detail="Ticket not found.")
 
-        # 2. Trigger Email Notification on Resolution
+        # 2. Trigger Email Notification (Only if resolved)
         if new_status == "resolved":
-            # Retrieve ticket and customer data
-            ticket_doc = await get_ticket(ticket_id) 
+            ticket_doc = await get_ticket(ticket_id)
             if ticket_doc:
-                customer_id = ticket_doc.get("customer_id")
-                customer_email, customer_name = await get_customer_email(customer_id)
+                customer_email, customer_name = await get_customer_email(ticket_doc.get("customer_id"))
                 
                 if customer_email:
                     subject = f"Ticket Resolved: {ticket_doc.get('subject', f'Ticket ID: {ticket_id}')}"
-                    body = (
-                        f"Dear {customer_name or 'Customer'},\n\n"
-                        f"We are pleased to inform you that your support ticket (**{ticket_id[:8]}**) "
-                        f"regarding '{ticket_doc.get('subject', 'your issue')}' has been successfully **RESOLVED**.\n\n"
-                        "If you encounter any further issues, please respond to this email to automatically reopen the case.\n\n"
-                        f"Regards,\n{SENDER_NAME} Team"
-                    )
+                    
                     # Dispatch Email (non-blocking)
-                    asyncio.create_task(send_email_notification(customer_email, subject, body))
+                    asyncio.create_task(
+                        send_email_notification(
+                            to_email=customer_email, 
+                            subject=subject, 
+                            body=update.resolution_message, # The single message the agent sent
+                            customer_name=customer_name,
+                            is_resolution=True 
+                        )
+                    )
                 else:
                     logging.warning(f"Could not send resolution email: Customer email not found for ticket {ticket_id}.")
             
