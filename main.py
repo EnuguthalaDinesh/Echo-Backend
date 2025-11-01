@@ -4,12 +4,12 @@ import json
 import logging
 import asyncio
 import re
-import smtplib 
+import smtplib # <-- RE-ADDED for email standard library types
 import bcrypt 
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple, Dict, Union 
-from email.mime.text import MIMEText 
-from email.utils import formataddr 
+from email.mime.text import MIMEText # <-- RE-ADDED
+from email.utils import formataddr # <-- RE-ADDED
 
 import aiosmtplib # <-- ADDED for async SMTP
 
@@ -267,7 +267,7 @@ async def _call_gemini(prompt_text: str, *, temperature: float = 0.7, max_output
         # Older helper
         if hasattr(genai, "generate_text"):
             def sync_generate():
-                return genai.generate_text(model=GEMINI_MODEL_NAME, prompt=prompt_text)
+                return genai.generate_generate_text(model=GEMINI_MODEL_NAME, prompt=prompt_text)
             resp = await loop.run_in_executor(None, sync_generate)
             if hasattr(resp, "text") and resp.text:
                 return resp.text
@@ -715,6 +715,7 @@ async def send_email_notification(
 ):
     """
     Sends an email using aiosmtplib via the SendGrid SMTP Relay.
+    FIXED: Uses correct encryption parameters for port 587.
     """
     if not all([SMTP_SERVER, SMTP_USERNAME, SMTP_PASSWORD]):
         logging.warning("SMTP configuration missing. Cannot send email notification.")
@@ -737,12 +738,13 @@ async def send_email_notification(
         # 2. Send the message using aiosmtplib
         await aiosmtplib.send(
             msg,
-            hostname=SMTP_SERVER,      # smtp.sendgrid.net
-            port=SMTP_PORT,            # 587
-            username=SMTP_USERNAME,    # apikey
-            password=SMTP_PASSWORD,    # [API Key]
-            use_tls=True,              # Required for security
-            start_tls=True if SMTP_PORT == 587 else False
+            hostname=SMTP_SERVER,      
+            port=SMTP_PORT,            
+            username=SMTP_USERNAME,    
+            password=SMTP_PASSWORD,    
+            # CRITICAL FIX: Only use start_tls for port 587 connections (SendGrid standard)
+            start_tls=(SMTP_PORT == 587),
+            use_tls=(SMTP_PORT == 465)  
         )
         
         logging.info(f"✅ SUCCESS: Email sent via SendGrid SMTP to {to_email}.")
