@@ -4,12 +4,12 @@ import json
 import logging
 import asyncio
 import re
-import smtplib # <-- RE-ADDED for email standard library types
+import smtplib 
 import bcrypt 
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple, Dict, Union 
-from email.mime.text import MIMEText # <-- RE-ADDED
-from email.utils import formataddr # <-- RE-ADDED
+from email.mime.text import MIMEText 
+from email.utils import formataddr 
 
 import aiosmtplib # <-- ADDED for async SMTP
 
@@ -51,7 +51,7 @@ VERCEL_FRONTEND_ORIGIN = os.getenv("VERCEL_FRONTEND_ORIGIN", "https://echo-front
 API_BASE_URL = os.getenv("API_BASE_URL", "https://echo-backend-1-ubeb.onrender.com")
 
 # -------------------------
-# Email Configuration (Updated for SendGrid SMTP)
+# Email Configuration (SendGrid SMTP)
 # -------------------------
 SMTP_SERVER = os.getenv("SMTP_SERVER")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
@@ -60,7 +60,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 
 # Sender Details
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "support@yourcompany.com")
-SENDER_NAME = os.getenv("SENDER_NAME", "echo-mind") # Corrected Sender Name
+SENDER_NAME = os.getenv("SENDER_NAME", "echo-mid") # Corrected Sender Name
 
 # -------------------------
 # MongoDB
@@ -1242,29 +1242,42 @@ async def get_customer_profile(
     if users_col is None:
         raise HTTPException(status_code=500, detail="User database not available.")
 
-    try:
-        # Determine the query ID (MongoDB ObjectId or external 'id' field)
-        is_valid_object_id = len(customer_id) == 24 and ObjectId.is_valid(customer_id)
-        query_id = ObjectId(customer_id) if is_valid_object_id else customer_id
+    # 1. Prepare query criteria
+    query_criteria = []
+    
+    # Check if the provided ID is a valid MongoDB ObjectId
+    is_valid_object_id = len(customer_id) == 24 and ObjectId.is_valid(customer_id)
+    
+    if is_valid_object_id:
+        query_criteria.append({"_id": ObjectId(customer_id)})
+    
+    # Always check against the stored string 'id' (for older UUIDs)
+    query_criteria.append({"id": customer_id})
+    
+    # NEW: Check if the ID string itself is an email address (to handle frontend passing email)
+    if "@" in customer_id:
+        query_criteria.append({"email": customer_id})
 
-        # Search by _id (if ObjectId) or by the 'id' field (if UUID string)
+    # If no criteria were generated, something is wrong
+    if not query_criteria:
+        raise HTTPException(status_code=400, detail="Invalid identifier format provided.")
+
+    try:
+        # 2. Search the collection
         customer_doc = await users_col.find_one(
-            {"$or": [{"_id": query_id}, {"id": customer_id}]},
-            # Only project safe, relevant fields
+            {"$or": query_criteria},
             {"email": 1, "name": 1, "created_at": 1, "role": 1}
         )
 
         if not customer_doc:
-            raise HTTPException(status_code=404, detail="Customer not found.")
+            raise HTTPException(status_code=404, detail=f"Customer record not found for ID/Email: {customer_id}")
 
-        # Simulate dynamic/calculated data based on the user object
+        # 3. Return profile
         customer_profile = {
             "name": customer_doc.get("name", "N/A"),
             "email": customer_doc.get("email", "N/A"),
-            # Tier based on role for demo, 'admin' is considered high-value/VIP
             "tier": "VIP" if customer_doc.get("role") in ["admin", "agent"] else "Standard",
             "join_date": customer_doc.get("created_at", datetime.min).isoformat(),
-            # Placeholder for sentiment, requires querying the chat_history collection
             "last_sentiment": "Neutral 😐", 
         }
 
