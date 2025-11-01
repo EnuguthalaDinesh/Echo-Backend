@@ -60,7 +60,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 
 # Sender Details
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "support@yourcompany.com")
-SENDER_NAME = os.getenv("SENDER_NAME", "echo-mind") # Fixed Sender Name
+SENDER_NAME = os.getenv("SENDER_NAME", "echo-mind") # Corrected Sender Name
 
 # -------------------------
 # MongoDB
@@ -399,7 +399,6 @@ async def get_history_answer(user_query: str) -> Optional[str]:
 
     return None
 
-# --- RE-ADDED MISSING FUNCTION ---
 async def save_chat_history_message(session_id: str, role: str, content: str, meta: Optional[Dict] = None):
     """
     Stores a single message (user or bot) into app.state.chat_history_collection
@@ -419,7 +418,7 @@ async def save_chat_history_message(session_id: str, role: str, content: str, me
         await col.insert_one(doc)
     except Exception as e:
         logging.warning(f"Failed to save chat history message: {e}")
-# ---------------------------------
+
 
 async def get_kb_answer(user_query: str, domain: str) -> Optional[str]:
     """
