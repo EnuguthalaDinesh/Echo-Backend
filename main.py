@@ -425,15 +425,21 @@ async def get_history_answer(user_query: str) -> Optional[str]:
 
     return None
 
-# --- MODIFIED: Save chat history with user_email ---
+# --- MODIFIED: Save chat history with user_email and added logging ---
 async def save_chat_history_message(session_id: str, role: str, content: str, user_email: str, meta: Optional[Dict] = None):
     """
     Stores a single message (user or bot) into app.state.chat_history_collection
     """
     col = getattr(app.state, "chat_history_collection", None)
+    
     if col is None:
-        logging.debug("chat_history_collection not configured; skipping save_chat_history_message")
+        logging.error("CRITICAL ERROR: chat_history_collection is NOT configured or failed to initialize.")
         return
+        
+    if not user_email or user_email == "anonymous@example.com":
+        logging.warning(f"Skipping history save: Invalid or anonymous user email ({user_email}).")
+        return
+        
     doc = {
         "session_id": session_id,
         "role": role,
@@ -443,10 +449,14 @@ async def save_chat_history_message(session_id: str, role: str, content: str, us
         "timestamp": datetime.utcnow(),
     }
     try:
-        await col.insert_one(doc)
+        result = await col.insert_one(doc)
+        if result.inserted_id:
+            logging.info(f"✅ History saved for {user_email}. Role: {role}. ID: {result.inserted_id}")
+        else:
+             logging.error(f"❌ History save failed for {user_email}: Insert acknowledged but no ID returned.")
     except Exception as e:
-        logging.warning(f"Failed to save chat history message: {e}")
-# ----------------------------------------------------
+        logging.error(f"FATAL DB WRITE ERROR: Failed to save chat history message for {user_email}: {e}")
+# ---------------------------------------------------------------------
 
 
 async def get_kb_answer(user_query: str, domain: str) -> Optional[str]:
@@ -1317,27 +1327,34 @@ async def get_user_chat_history(
 ):
     """
     Retrieves the persistent chat history for the currently authenticated user
-    by querying the chat_history collection using the user's permanent email.
+    by querying the chat_history collection using multiple keys (email and old ID).
     """
     if not current_user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
     chat_history_col = getattr(app.state, "chat_history_collection", None)
     user_email = current_user.get("email")
+    customer_id = get_user_mongo_id(current_user) # Get the MongoDB ObjectId string
+
     
     if chat_history_col is None:
         logging.error("chat_history_collection not configured; cannot fetch history.")
         return [] 
         
-    if not user_email:
-        logging.warning("Authenticated user has no email for history query.")
+    if not user_email or customer_id == "no-id":
+        logging.warning("Authenticated user has incomplete ID/email for history query.")
         return []
     
     try:
-        # --- CRITICAL FIX: Query by permanent user_email ---
-        cursor = chat_history_col.find(
-            {"user_email": user_email}
-        ).sort("timestamp", 1) 
+        # --- CRITICAL FIX: Use $or to query based on EITHER email (new) or customer_id (old/fallback) ---
+        query_filter = {
+            "$or": [
+                {"user_email": user_email}, # Matches documents saved with the new logic
+                {"session_id": customer_id}  # Matches old documents saved with the ObjectId string
+            ]
+        }
+
+        cursor = chat_history_col.find(query_filter).sort("timestamp", 1) 
         
         history_list = await cursor.to_list(length=1000)
             
@@ -1349,6 +1366,42 @@ async def get_user_chat_history(
     except Exception as e:
         logging.error(f"Error fetching user chat history for {user_email}: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve chat history.")
+
+@app.delete("/history/delete_all", status_code=status.HTTP_200_OK)
+async def delete_user_chat_history(
+    current_user: Dict = Depends(get_current_user),
+):
+    """Deletes all chat history associated with the currently authenticated user."""
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    chat_history_col = getattr(app.state, "chat_history_collection", None)
+    user_email = current_user.get("email")
+    
+    if chat_history_col is None:
+        raise HTTPException(status_code=500, detail="Database not configured.")
+    
+    if not user_email:
+        raise HTTPException(status_code=400, detail="User email not available for deletion filter.")
+
+    try:
+        # Use delete_many() with the permanent identifier (email)
+        delete_result = await chat_history_col.delete_many(
+            {"user_email": user_email}
+        )
+        
+        logging.info(f"🗑️ Deleted {delete_result.deleted_count} chat history messages for user: {user_email}.")
+        
+        return {
+            "message": "All chat history deleted successfully.",
+            "deleted_count": delete_result.deleted_count,
+            "user_email": user_email,
+        }
+
+    except Exception as e:
+        logging.error(f"Error deleting chat history for {user_email}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete chat history.")
+# ---------------------------------------------------------------------
 
 # -------------------------
 # Dynamic Customer Profile Endpoint
@@ -1748,7 +1801,7 @@ async def chat_interaction(
         case_status = "escalated"
         case_id = ticket_id
         
-        # HISTORY EXCLUSION LOGIC APPLIED: Not saving to chat_history
+        # HISTORY EXCLUSION APPLIED HERE
         
         return ChatResponse(
             bot_response=final_response,
