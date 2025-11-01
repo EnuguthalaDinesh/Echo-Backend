@@ -178,8 +178,7 @@ async def get_current_admin(current_user: Optional[Dict] = Depends(get_current_u
     return current_user # Return the user object if authorized
 
 
-# --- UPDATED: Split Critical Keywords into two categories ---
-# Comprehensive list for general analysis/sentiment (if needed)
+# --- CRITICAL KEYWORDS ---
 CRITICAL_KEYWORDS = [
     "urgent", "critical", "immediate action", "ASAP", "emergency", "crisis",
     "angry", "furious", "outraged", "unacceptable", "fuming", "highly dissatisfied", 
@@ -227,7 +226,7 @@ HIGH_SEVERITY_KEYWORDS = [
 
 
 def check_critical_issue(user_query: str, sentiment: str) -> bool:
-    """Checks for critical keywords, using the restricted HIGH_SEVERITY_KEYWORDS."""
+    """Checks for critical keywords, using the restricted HIGH_SEVERITY_KEYWORDS for ticket generation."""
     text = user_query.lower()
     
     # TIER 1: High-Security/Immediate Action (returns True regardless of sentiment)
@@ -238,10 +237,7 @@ def check_critical_issue(user_query: str, sentiment: str) -> bool:
     # TIER 2: HIGH SEVERITY check for immediate ticket creation
     for kw in HIGH_SEVERITY_KEYWORDS:
         if kw in text:
-            # We enforce a sentiment check only for less extreme "critical" keywords 
-            # to prevent auto-escalation for minor complaints, but HIGH_SEVERITY_KEYWORDS 
-            # are usually enough on their own. We'll link to NEGATIVE sentiment 
-            # as a general filter for a slightly more controlled trigger.
+            # Enforce a sentiment check only for a slightly more controlled trigger
             if sentiment == "NEGATIVE" or kw in ["fraud", "data breach", "outage", "emergency"]:
                 return True
                 
@@ -429,7 +425,8 @@ async def get_history_answer(user_query: str) -> Optional[str]:
 
     return None
 
-async def save_chat_history_message(session_id: str, role: str, content: str, meta: Optional[Dict] = None):
+# --- MODIFIED: Save chat history with user_email ---
+async def save_chat_history_message(session_id: str, role: str, content: str, user_email: str, meta: Optional[Dict] = None):
     """
     Stores a single message (user or bot) into app.state.chat_history_collection
     """
@@ -441,6 +438,7 @@ async def save_chat_history_message(session_id: str, role: str, content: str, me
         "session_id": session_id,
         "role": role,
         "content": content,
+        "user_email": user_email,  # <-- NEW: Storing user email for retrieval
         "meta": meta or {},
         "timestamp": datetime.utcnow(),
     }
@@ -448,6 +446,7 @@ async def save_chat_history_message(session_id: str, role: str, content: str, me
         await col.insert_one(doc)
     except Exception as e:
         logging.warning(f"Failed to save chat history message: {e}")
+# ----------------------------------------------------
 
 
 async def get_kb_answer(user_query: str, domain: str) -> Optional[str]:
@@ -569,6 +568,7 @@ async def generate_bot_response(user_query: str, conversation_history: List["Cha
     # --- 3. CONSTRUCT PERSONALIZED PROMPT ---
     
     personalization_context = (
+        f"You are a helpful {domain} support agent. Always adhere to the CUSTOMER PERSONALIZATION RULES. "
         f"CUSTOMER PERSONALIZATION RULES:\n"
         f"- Target Tone: {profile_data.get('tone_suggestion', 'Be efficient and helpful.')}\n"
         f"- Communication Preferences: {profile_data.get('preferences', 'Standard.')}\n\n"
@@ -854,6 +854,7 @@ class HistoryMessage(BaseModel):
     session_id: str
     role: str
     content: str
+    user_email: Optional[EmailStr] = None # <-- ADDED: For history retrieval consistency
     timestamp: datetime # Use datetime for precise time display
     meta: Optional[Dict] = {}
     
@@ -958,6 +959,8 @@ async def on_startup():
             # Create indexes for efficiency
             await app.state.users_collection.create_index("email", unique=True)
             await app.state.tickets_collection.create_index("customer_id")
+            # --- NEW INDEX for history retrieval by email ---
+            await app.state.chat_history_collection.create_index("user_email")
 
             await app.state.mongo_client.admin.command("ping")
             logging.info("✅ MongoDB connected, ping succeeded, and collections/indexes set up.")
@@ -1306,50 +1309,45 @@ async def me(current_user: Optional[Dict] = Depends(get_current_user)):
     }
 
 # -------------------------
-# NEW: History Endpoints (FIX for 404)
+# NEW: History Endpoints (FIX for 404 and consistency)
 # -------------------------
 @app.get("/history", response_model=List[HistoryMessage])
 async def get_user_chat_history(
     current_user: Dict = Depends(get_current_user), 
 ):
     """
-    Retrieves the persistent chat history for the currently authenticated user.
-    The frontend calls this endpoint to display past sessions.
+    Retrieves the persistent chat history for the currently authenticated user
+    by querying the chat_history collection using the user's permanent email.
     """
     if not current_user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
     chat_history_col = getattr(app.state, "chat_history_collection", None)
+    user_email = current_user.get("email")
     
     if chat_history_col is None:
         logging.error("chat_history_collection not configured; cannot fetch history.")
         return [] 
         
-    # The session_id in the collection is expected to match the customer's MongoDB ObjectId string
-    customer_id = get_user_mongo_id(current_user)
-    
-    if customer_id == "no-id":
-        logging.warning(f"User {current_user.get('email')} has no valid ID for history query.")
+    if not user_email:
+        logging.warning("Authenticated user has no email for history query.")
         return []
     
     try:
-        # Retrieve all messages where the 'session_id' matches the user's ID.
-        # This assumes the user's primary ID is consistently used as the session_id
-        # in the `save_chat_history_message` helper function.
+        # --- CRITICAL FIX: Query by permanent user_email ---
         cursor = chat_history_col.find(
-            {"session_id": customer_id}
+            {"user_email": user_email}
         ).sort("timestamp", 1) 
         
-        # NOTE: Using to_list is common for small collections, but be mindful of memory for large sets.
         history_list = await cursor.to_list(length=1000)
             
-        logging.info(f"Retrieved {len(history_list)} history messages for user {customer_id}.")
+        logging.info(f"Retrieved {len(history_list)} history messages for user {user_email}.")
         
         # Pydantic will serialize the list using the HistoryMessage model
         return history_list
 
     except Exception as e:
-        logging.error(f"Error fetching user chat history for {customer_id}: {e}")
+        logging.error(f"Error fetching user chat history for {user_email}: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve chat history.")
 
 # -------------------------
@@ -1657,9 +1655,12 @@ async def update_user_role(
 @app.post("/chat", response_model=ChatResponse)
 async def chat_interaction(
     chat_req: ChatRequest,
+    current_user: Optional[Dict] = Depends(get_current_user) # Inject current user here
 ):
-    # This log helps debug the 422 error by showing the received payload structure
-    logging.debug(f"Received Chat Request: {chat_req.model_dump()}") 
+    # Retrieve authenticated user's email or default to unknown
+    user_email = current_user.get("email") if current_user else "anonymous@example.com"
+    
+    logging.debug(f"Received Chat Request from {user_email}: {chat_req.model_dump()}") 
     
     user_query = chat_req.user_query
     session_id = chat_req.session_id
@@ -1668,20 +1669,21 @@ async def chat_interaction(
     # 0. Check for sensitive financial PII (security layer)
     if SENSITIVE_FINANCE_PATTERN.search(user_query) and chat_req.domain == "finance":
         bot_response = "I cannot process sensitive financial account details like balances or passwords through chat. Please contact our secure phone line."
-        await save_chat_history_message(session_id, "user", user_query, {"is_sensitive": True})
-        await save_chat_history_message(session_id, "bot", bot_response, {"source": "Security Filter"})
+        # --- MODIFIED HISTORY SAVE ---
+        await save_chat_history_message(session_id, "user", user_query, user_email, {"is_sensitive": True})
+        await save_chat_history_message(session_id, "bot", bot_response, user_email, {"source": "Security Filter"})
         return ChatResponse(bot_response=bot_response, case_status="blocked")
 
     # 1. Analyze Sentiment
-    # Uses keyword heuristic since sentiment_analyzer is None
     sentiment = analyze_sentiment(user_query) 
     
     # 2. Check Global History Cache (first-pass resolution)
     cached_answer = await get_history_answer(user_query)
     if cached_answer:
         # Cache hit - Resolve instantly, no new ticket, no RAG needed.
-        await save_chat_history_message(session_id, "user", user_query)
-        await save_chat_history_message(session_id, "bot", cached_answer, {"source": "Global Cache"})
+        # --- MODIFIED HISTORY SAVE ---
+        await save_chat_history_message(session_id, "user", user_query, user_email)
+        await save_chat_history_message(session_id, "bot", cached_answer, user_email, {"source": "Global Cache"})
         return ChatResponse(
             bot_response=cached_answer,
             case_status="resolved",
@@ -1692,7 +1694,6 @@ async def chat_interaction(
         )
         
     # 3. Classify Intent/Domain
-    # Uses Gemini or keyword rules since zero_shot_classifier is None
     predicted_domain, confidence, source = await classify_intent(user_query) 
     
     # 4. Check for Critical/Urgent Issues (Using the stricter, new logic)
@@ -1747,8 +1748,7 @@ async def chat_interaction(
         case_status = "escalated"
         case_id = ticket_id
         
-        # *** HISTORY EXCLUSION LOGIC IS APPLIED HERE ***
-        # Not saving to chat_history to prevent polluting the global history cache.
+        # HISTORY EXCLUSION LOGIC APPLIED: Not saving to chat_history
         
         return ChatResponse(
             bot_response=final_response,
@@ -1763,9 +1763,10 @@ async def chat_interaction(
     # B. Case 2: Successful Automated Resolution (KB or Gemini)
     if source_type in ["KB", "Gemini"]:
         
-        # Save message pair to history
-        await save_chat_history_message(session_id, "user", user_query)
-        await save_chat_history_message(session_id, "bot", bot_response, {"source": source_type})
+        # Save message pair to history 
+        # --- MODIFIED HISTORY SAVE ---
+        await save_chat_history_message(session_id, "user", user_query, user_email)
+        await save_chat_history_message(session_id, "bot", bot_response, user_email, {"source": source_type})
 
         return ChatResponse(
             bot_response=bot_response,
@@ -1778,11 +1779,12 @@ async def chat_interaction(
             intent_source=source,
         )
     
-    # C. Case 3: Pure Fallback (Should have been caught by escalation, but for safety)
+    # C. Case 3: Pure Fallback 
     final_response = bot_response
     # Save message pair to history
-    await save_chat_history_message(session_id, "user", user_query)
-    await save_chat_history_message(session_id, "bot", final_response, {"source": source_type})
+    # --- MODIFIED HISTORY SAVE ---
+    await save_chat_history_message(session_id, "user", user_query, user_email)
+    await save_chat_history_message(session_id, "bot", final_response, user_email, {"source": source_type})
     
     return ChatResponse(
         bot_response=final_response,
