@@ -17,3 +17,4 @@ email-validator      # For Pydantic EmailStr validation
 google-generativeai  # For Gemini API calls
 authlib              # For Google/GitHub OAuth
 aiosmtplib
+itsdangerous
