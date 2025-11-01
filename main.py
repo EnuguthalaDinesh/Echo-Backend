@@ -178,8 +178,9 @@ async def get_current_admin(current_user: Optional[Dict] = Depends(get_current_u
     return current_user # Return the user object if authorized
 
 
+# --- UPDATED: Split Critical Keywords into two categories ---
+# Comprehensive list for general analysis/sentiment (if needed)
 CRITICAL_KEYWORDS = [
-    # ... (CRITICAL_KEYWORDS list remains unchanged)
     "urgent", "critical", "immediate action", "ASAP", "emergency", "crisis",
     "angry", "furious", "outraged", "unacceptable", "fuming", "highly dissatisfied", 
     "stuck", "stranded", "trapped", "cannot proceed", "must resolve now",
@@ -207,8 +208,26 @@ CRITICAL_KEYWORDS = [
     "lost passport", "stolen tickets", "no transport", "emergency evacuation", 
     "overbooked", "no room available",
 ]
+
+# NEW: Restricted list for immediate ticket generation
+HIGH_SEVERITY_KEYWORDS = [
+    # Security / Financial
+    "fraud", "scam", "stolen", "identity theft", "data breach", "account compromise",
+    "unauthorized payment", "unauthorized transaction", "immediate refund", "money lost",
+    "legal action", "lawsuit", "contacting my lawyer",
+    
+    # System Down / Emergency
+    "completely down", "major outage", "global outage", "fatal error", "critical bug",
+    "emergency", "crisis", "stranded", "trapped", "must resolve now", 
+    "reset password", "change login",
+    
+    # Extreme Urgency / Danger
+    "urgent", "critical", "ASAP", "immediate action",
+]
+
+
 def check_critical_issue(user_query: str, sentiment: str) -> bool:
-    """Checks for critical keywords, typically coupled with negative sentiment."""
+    """Checks for critical keywords, using the restricted HIGH_SEVERITY_KEYWORDS."""
     text = user_query.lower()
     
     # TIER 1: High-Security/Immediate Action (returns True regardless of sentiment)
@@ -216,10 +235,14 @@ def check_critical_issue(user_query: str, sentiment: str) -> bool:
     if any(kw in text for kw in HIGH_SECURITY_KWS):
         return True
 
-    # TIER 2: Critical issues linked to negative sentiment (Urgency, Anger)
-    if sentiment == "NEGATIVE":
-        for kw in CRITICAL_KEYWORDS:
-            if kw in text:
+    # TIER 2: HIGH SEVERITY check for immediate ticket creation
+    for kw in HIGH_SEVERITY_KEYWORDS:
+        if kw in text:
+            # We enforce a sentiment check only for less extreme "critical" keywords 
+            # to prevent auto-escalation for minor complaints, but HIGH_SEVERITY_KEYWORDS 
+            # are usually enough on their own. We'll link to NEGATIVE sentiment 
+            # as a general filter for a slightly more controlled trigger.
+            if sentiment == "NEGATIVE" or kw in ["fraud", "data breach", "outage", "emergency"]:
                 return True
                 
     return False
@@ -1672,7 +1695,7 @@ async def chat_interaction(
     # Uses Gemini or keyword rules since zero_shot_classifier is None
     predicted_domain, confidence, source = await classify_intent(user_query) 
     
-    # 4. Check for Critical/Urgent Issues
+    # 4. Check for Critical/Urgent Issues (Using the stricter, new logic)
     is_critical = check_critical_issue(user_query, sentiment)
     
     # 5. KB Lookup
@@ -1704,7 +1727,8 @@ async def chat_interaction(
     
     # A. Case 1: Critical Issue detected OR Bot cannot answer (internal self-check)
     if is_critical or should_escalate(bot_response):
-        failure_reason = "CRITICAL ISSUE" if is_critical else "BOT INCAPABLE"
+        # Determine specific reason for logging/ticket subject
+        failure_reason = "CRITICAL ISSUE (High Severity)" if is_critical else "BOT INCAPABLE"
         
         ticket_id = await create_mongo_ticket(
             customer_id=customer_id,
@@ -1723,9 +1747,8 @@ async def chat_interaction(
         case_status = "escalated"
         case_id = ticket_id
         
-        # Store initial message pair in history
-        await save_chat_history_message(session_id, "user", user_query)
-        await save_chat_history_message(session_id, "bot", final_response, {"source": source_type, "ticket_id": case_id})
+        # *** HISTORY EXCLUSION LOGIC IS APPLIED HERE ***
+        # Not saving to chat_history to prevent polluting the global history cache.
         
         return ChatResponse(
             bot_response=final_response,
@@ -1757,6 +1780,7 @@ async def chat_interaction(
     
     # C. Case 3: Pure Fallback (Should have been caught by escalation, but for safety)
     final_response = bot_response
+    # Save message pair to history
     await save_chat_history_message(session_id, "user", user_query)
     await save_chat_history_message(session_id, "bot", final_response, {"source": source_type})
     
