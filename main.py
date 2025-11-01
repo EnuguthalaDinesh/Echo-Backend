@@ -60,7 +60,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 
 # Sender Details
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "support@yourcompany.com")
-SENDER_NAME = os.getenv("SENDER_NAME", "echo-mid") # Fixed Sender Name
+SENDER_NAME = os.getenv("SENDER_NAME", "echo-mind") # Fixed Sender Name
 
 # -------------------------
 # MongoDB
