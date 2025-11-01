@@ -29,7 +29,7 @@ import google.generativeai as genai
 
 # --- MongoDB ---
 import motor.motor_asyncio
-from motor.motor_asynccio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # --- Passwords / JWT ---
 from jose import JWTError, jwt
@@ -374,11 +374,8 @@ async def get_history_answer(user_query: str) -> Optional[str]:
     normalized_query = user_query.strip().lower()
 
     try:
-        # Optimized query: find a user message that matches the normalized query exactly
-        # Note: This query benefits from an index on {"role": 1, "content": 1, "timestamp": -1}
         user_message_doc = await col.find_one({
             "role": "user",
-            # Use exact match for content if possible, or case-insensitive regex for flexibility
             "content": {"$regex": f"^{re.escape(normalized_query)}$", "$options": "i"}
         }, sort=[("timestamp", -1)])
 
@@ -388,12 +385,11 @@ async def get_history_answer(user_query: str) -> Optional[str]:
         found_session_id = user_message_doc["session_id"]
         found_timestamp = user_message_doc["timestamp"]
 
-        # Find the *immediate* bot response in the *same session* after the user's message
         bot_response_doc = await col.find_one({
             "session_id": found_session_id,
             "role": "bot",
             "timestamp": {"$gt": found_timestamp}
-        }, sort=[("timestamp", 1)]) # Sort ascending to get the very next message
+        }, sort=[("timestamp", 1)])
 
         if bot_response_doc:
             source = bot_response_doc.get("meta", {}).get("source", "unknown")
@@ -412,14 +408,11 @@ async def get_history_answer(user_query: str) -> Optional[str]:
 async def save_chat_history_message(session_id: str, role: str, content: str, meta: Optional[Dict] = None):
     """
     Stores a single message (user or bot) into app.state.chat_history_collection
-    CRITICAL FIX: Logs an ERROR if the collection is not configured.
     """
     col = getattr(app.state, "chat_history_collection", None)
     if col is None:
-        # CRITICAL CHANGE: Log an ERROR if the collection is missing, not just a debug.
-        logging.error("❌ CRITICAL: chat_history_collection is NOT CONFIGURED. History save skipped.")
+        logging.debug("chat_history_collection not configured; skipping save_chat_history_message")
         return
-        
     doc = {
         "session_id": session_id,
         "role": role,
@@ -430,7 +423,7 @@ async def save_chat_history_message(session_id: str, role: str, content: str, me
     try:
         await col.insert_one(doc)
     except Exception as e:
-        logging.error(f"Failed to save chat history message: {e}")
+        logging.warning(f"Failed to save chat history message: {e}")
 
 
 async def get_kb_answer(user_query: str, domain: str) -> Optional[str]:
@@ -516,9 +509,6 @@ async def generate_bot_response(user_query: str, conversation_history: List["Cha
     """
     Generates a bot response using Gemini, injecting context from past resolved cases AND 
     retrieved customer profile for personalization.
-    
-    CRITICAL: The prompt instructs the bot to signal inability to answer
-              by using phrases caught by should_escalate (like 'unable to help').
     """
     if not gemini_api_key:
         return "Sorry, AI is temporarily unavailable."
@@ -563,10 +553,7 @@ async def generate_bot_response(user_query: str, conversation_history: List["Cha
     prompt = (
         f"You are a helpful {domain} support agent. Always adhere to the CUSTOMER PERSONALIZATION RULES. "
         f"{personalization_context}"
-        "Answer the customer's query concisely and professionally. "
-        "IMPORTANT: If you **cannot** provide a complete solution from your context and need human intervention, "
-        "explicitly include the phrase 'unable to help' in your response." # <-- Instruction to trigger escalation
-        "\n\n"
+        "Answer the customer's query concisely and professionally.\n\n"
         
         f"Historical Context for Resolution:\n{case_context}\n\n"
         
@@ -605,7 +592,7 @@ async def create_mongo_ticket(
         return None
         
     try:
-        # Append the specific failure reason to the description (internal metadata)
+        # Append the specific failure reason to the description
         full_description = f"{description}\n\nFAILURE REASON: {failure_reason}"
         
         new_ticket = {
@@ -762,9 +749,9 @@ async def send_email_notification(
         await aiosmtplib.send(
             msg,
             hostname=SMTP_SERVER,      
-            port=SMTP_PORT,           
-            username=SMTP_USERNAME,   
-            password=SMTP_PASSWORD,   
+            port=SMTP_PORT,            
+            username=SMTP_USERNAME,    
+            password=SMTP_PASSWORD,    
             # CRITICAL FIX: Only use start_tls for port 587 connections (SendGrid standard)
             start_tls=(SMTP_PORT == 587),
             use_tls=(SMTP_PORT == 465)  # Use use_tls ONLY if port 465 is configured
@@ -934,33 +921,19 @@ async def on_startup():
             app.state.orders_collection = app.state.chatbot_db["orders"]
             app.state.cases_collection = app.state.chatbot_db["cases"]
             app.state.customers_collection = app.state.chatbot_db["customers"]
-            app.state.chat_history_collection = app.state.chatbot_db["chat_history"] # <-- TARGET COLLECTION
+            app.state.chat_history_collection = app.state.chatbot_db["chat_history"]
             app.state.faq_kb_collection = app.state.chatbot_db["faq_knowledge_base"]
             
             # Create indexes for efficiency
             await app.state.users_collection.create_index("email", unique=True)
             await app.state.tickets_collection.create_index("customer_id")
-            
-            # --- CRITICAL NEW INDEX FOR CHAT HISTORY LOOKUP ---
-            await app.state.chat_history_collection.create_index([
-                ("session_id", 1),
-                ("role", 1),
-                ("timestamp", 1) # Good for finding the next message
-            ])
-            # Index for the global history cache lookup:
-            await app.state.chat_history_collection.create_index([
-                ("role", 1),
-                ("content", 1),
-                ("timestamp", -1) 
-            ])
-            # ----------------------------------------------------
 
             await app.state.mongo_client.admin.command("ping")
             logging.info("✅ MongoDB connected, ping succeeded, and collections/indexes set up.")
         else:
             raise RuntimeError("MONGODB_URI not set")
     except Exception as e:
-        logging.error(f"❌ CRITICAL: MongoDB startup failed: {e}")
+        logging.error(f"MongoDB startup failed: {e}")
         app.state.mongo_client = None
         app.state.chatbot_db = None
         app.state.users_collection = None
@@ -968,7 +941,7 @@ async def on_startup():
         app.state.orders_collection = None
         app.state.cases_collection = None
         app.state.customers_collection = None
-        app.state.chat_history_collection = None # <-- Will be None on failure
+        app.state.chat_history_collection = None
         app.state.faq_kb_collection = None 
 
 @app.on_event("shutdown")
@@ -1644,7 +1617,7 @@ async def chat_interaction(
     # 4. Check for Critical/Urgent Issues
     is_critical = check_critical_issue(user_query, sentiment)
     
-    # 5. KB Lookup (Try to resolve with KB first)
+    # 5. KB Lookup
     kb_answer = await get_kb_answer(user_query, predicted_domain)
     
     bot_response = None
@@ -1655,7 +1628,7 @@ async def chat_interaction(
         source_type = "KB"
         logging.info("➡️ KB Match found.")
     elif gemini_api_key:
-        # 6. Generate Response using RAG/Gemini (If KB fails)
+        # 6. Generate Response using RAG/Gemini
         try:
             bot_response = await generate_bot_response(
                 user_query, chat_req.conversation_history, predicted_domain, customer_id
@@ -1663,44 +1636,36 @@ async def chat_interaction(
             source_type = "Gemini"
         except Exception as e:
             logging.error(f"Gemini generation failed: {e}")
-            bot_response = "I am unable to help at this moment due to an internal error." # Fallback ensures should_escalate catches it
+            bot_response = "I couldn't generate a response. A human agent needs to step in."
             source_type = "Fallback"
     else:
-        # Fallback if no KB and no Gemini key
-        bot_response = "I am unable to help at this moment and require manual agent assistance for complex queries."
+        bot_response = "I am a simple bot and require manual agent assistance for complex queries."
         source_type = "Fallback"
 
     # 7. Escalation & Ticket Creation Logic
     
-    # A. Case 1: Critical Issue detected OR Bot explicitly failed to answer (KB/Gemini failed)
+    # A. Case 1: Critical Issue detected OR Bot cannot answer (internal self-check)
     if is_critical or should_escalate(bot_response):
         failure_reason = "CRITICAL ISSUE" if is_critical else "BOT INCAPABLE"
         
         ticket_id = await create_mongo_ticket(
             customer_id=customer_id,
-            # Internal subject for agent visibility
-            subject=f"ESCALATED: {predicted_domain} - {user_query[:50]}", 
-            # Description includes both user query and bot's internal attempt/failure
-            description=f"User Query: {user_query} | Bot Response (Pre-Escalation): {bot_response}",
+            subject=f"Urgent: {predicted_domain} - {user_query[:50]}",
+            description=f"Conversation: {user_query} | Bot response: {bot_response}",
             domain=predicted_domain,
-            failure_reason=failure_reason # Internal reason for escalation
+            failure_reason=failure_reason
         )
         
-        # --- NEW USER-FACING RESPONSE (No Keywords/Internal Details) ---
-        if ticket_id:
-            final_response = (
-                f"Thank you for contacting us. We recognize your issue requires direct attention. "
-                f"I have **immediately escalated** your case to our human support team. "
-                f"Your reference number is **{ticket_id}**. An agent will review your full conversation and respond shortly."
-            )
-        else:
-            final_response = "We apologize, a critical error occurred while attempting to create your support ticket. Please refresh the page or try again later."
-        # -----------------------------------------------------------------
+        final_response = (
+            f"Thank you, your issue has been **immediately escalated** to a human agent "
+            f"due to its critical nature ({failure_reason}). "
+            f"Your reference ticket ID is **{ticket_id}**. We apologize for the inconvenience."
+        ) if ticket_id else "Critical issue detected, but failed to create a ticket."
         
         case_status = "escalated"
         case_id = ticket_id
         
-        # Store message pair in history
+        # Store initial message pair in history
         await save_chat_history_message(session_id, "user", user_query)
         await save_chat_history_message(session_id, "bot", final_response, {"source": source_type, "ticket_id": case_id})
         
@@ -1715,7 +1680,6 @@ async def chat_interaction(
         )
 
     # B. Case 2: Successful Automated Resolution (KB or Gemini)
-    # This now only happens if KB was successful, or Gemini answered without triggering an escalation phrase.
     if source_type in ["KB", "Gemini"]:
         
         # Save message pair to history
@@ -1733,7 +1697,7 @@ async def chat_interaction(
             intent_source=source,
         )
     
-    # This section is technically unreachable due to the logic above, but kept for structural safety.
+    # C. Case 3: Pure Fallback (Should have been caught by escalation, but for safety)
     final_response = bot_response
     await save_chat_history_message(session_id, "user", user_query)
     await save_chat_history_message(session_id, "bot", final_response, {"source": source_type})
