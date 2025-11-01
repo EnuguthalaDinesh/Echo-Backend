@@ -60,7 +60,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 
 # Sender Details
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "support@yourcompany.com")
-SENDER_NAME = os.getenv("SENDER_NAME", "echo-mid") # Corrected Sender Name
+SENDER_NAME = os.getenv("SENDER_NAME", "echo-mid") 
 
 # -------------------------
 # MongoDB
@@ -715,7 +715,7 @@ async def send_email_notification(
 ):
     """
     Sends an email using aiosmtplib via the SendGrid SMTP Relay.
-    FIXED: Uses correct encryption parameters for port 587.
+    FIXED: Uses correct encryption parameters for port 587 (solving the start_tls/use_tls conflict).
     """
     if not all([SMTP_SERVER, SMTP_USERNAME, SMTP_PASSWORD]):
         logging.warning("SMTP configuration missing. Cannot send email notification.")
@@ -744,7 +744,7 @@ async def send_email_notification(
             password=SMTP_PASSWORD,    
             # CRITICAL FIX: Only use start_tls for port 587 connections (SendGrid standard)
             start_tls=(SMTP_PORT == 587),
-            use_tls=(SMTP_PORT == 465)  
+            use_tls=(SMTP_PORT == 465)  # Use use_tls ONLY if port 465 is configured
         )
         
         logging.info(f"✅ SUCCESS: Email sent via SendGrid SMTP to {to_email}.")
