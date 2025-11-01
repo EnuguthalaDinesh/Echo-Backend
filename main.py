@@ -4,12 +4,12 @@ import json
 import logging
 import asyncio
 import re
-import smtplib # <-- RE-ADDED for email standard library types
+import smtplib 
 import bcrypt 
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple, Dict, Union 
-from email.mime.text import MIMEText # <-- RE-ADDED
-from email.utils import formataddr # <-- RE-ADDED
+from email.mime.text import MIMEText 
+from email.utils import formataddr 
 
 import aiosmtplib # <-- ADDED for async SMTP
 
@@ -697,6 +697,10 @@ async def get_customer_email(customer_id: str) -> Tuple[Optional[str], Optional[
         # Search by _id (if valid ObjectId) or by the 'id' field (if string UUID)
         customer_doc = await col.find_one({"$or": [{"_id": query_id}, {"id": customer_id}]}, {"email": 1, "name": 1})
         
+        # NEW FIX: Fallback lookup by email address (for tickets linked by email)
+        if not customer_doc and "@" in customer_id:
+            customer_doc = await col.find_one({"email": customer_id}, {"email": 1, "name": 1})
+
         if customer_doc:
             return customer_doc.get("email"), customer_doc.get("name")
         return None, None
