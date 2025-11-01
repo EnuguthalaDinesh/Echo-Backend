@@ -4,13 +4,14 @@ import json
 import logging
 import asyncio
 import re
-# Removed: import smtplib, email.mime.text, email.utils (No longer needed for EmailJS)
+import smtplib # <-- RE-ADDED for email standard library types
 import bcrypt 
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple, Dict, Union 
+from email.mime.text import MIMEText # <-- RE-ADDED
+from email.utils import formataddr # <-- RE-ADDED
 
-# --- ADDED FOR EMAILJS API ---
-import httpx 
+import aiosmtplib # <-- ADDED for async SMTP
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, status, Body, Request, WebSocket, WebSocketDisconnect
@@ -50,19 +51,16 @@ VERCEL_FRONTEND_ORIGIN = os.getenv("VERCEL_FRONTEND_ORIGIN", "https://echo-front
 API_BASE_URL = os.getenv("API_BASE_URL", "https://echo-backend-1-ubeb.onrender.com")
 
 # -------------------------
-# Email Configuration (Updated for EmailJS)
+# Email Configuration (Updated for SendGrid SMTP)
 # -------------------------
-# EmailJS Specific Config
-EMAILJS_API_URL = "https://api.emailjs.com/api/v1.0/email/send"
-EMAILJS_SERVICE_ID = os.getenv("EMAILJS_SERVICE_ID") 
-EMAILJS_TEMPLATE_ID_FINAL = os.getenv("EMAILJS_TEMPLATE_ID_FINAL") 
-EMAILJS_PUBLIC_KEY = os.getenv("EMAILJS_PUBLIC_KEY") 
-EMAILJS_PRIVATE_KEY = os.getenv("EMAILJS_PRIVATE_KEY") 
+SMTP_SERVER = os.getenv("SMTP_SERVER")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 
 # Sender Details
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "support@yourcompany.com")
 SENDER_NAME = os.getenv("SENDER_NAME", "echo-mid") # Fixed Sender Name
-
 
 # -------------------------
 # MongoDB
@@ -401,6 +399,27 @@ async def get_history_answer(user_query: str) -> Optional[str]:
 
     return None
 
+# --- RE-ADDED MISSING FUNCTION ---
+async def save_chat_history_message(session_id: str, role: str, content: str, meta: Optional[Dict] = None):
+    """
+    Stores a single message (user or bot) into app.state.chat_history_collection
+    """
+    col = getattr(app.state, "chat_history_collection", None)
+    if col is None:
+        logging.debug("chat_history_collection not configured; skipping save_chat_history_message")
+        return
+    doc = {
+        "session_id": session_id,
+        "role": role,
+        "content": content,
+        "meta": meta or {},
+        "timestamp": datetime.utcnow(),
+    }
+    try:
+        await col.insert_one(doc)
+    except Exception as e:
+        logging.warning(f"Failed to save chat history message: {e}")
+# ---------------------------------
 
 async def get_kb_answer(user_query: str, domain: str) -> Optional[str]:
     """
@@ -687,7 +706,7 @@ async def get_customer_email(customer_id: str) -> Tuple[Optional[str], Optional[
         logging.error(f"Error fetching customer email for ID {customer_id}: {e}")
         return None, None
 
-# Async Email Sending Function (REAL IMPLEMENTATION using EmailJS API)
+# Async Email Sending Function (REVERTED TO SENDGRID SMTP)
 async def send_email_notification(
     to_email: str, 
     subject: str, 
@@ -696,50 +715,45 @@ async def send_email_notification(
     is_resolution: bool = False 
 ):
     """
-    Sends an email via the EmailJS REST API using the Resolution template.
-    The sender's name is fixed to 'echo-mid'.
+    Sends an email using aiosmtplib via the SendGrid SMTP Relay.
     """
-    if not all([EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID_FINAL, EMAILJS_PUBLIC_KEY, EMAILJS_PRIVATE_KEY]):
-        logging.warning("EmailJS configuration incomplete. Cannot send email.")
+    if not all([SMTP_SERVER, SMTP_USERNAME, SMTP_PASSWORD]):
+        logging.warning("SMTP configuration missing. Cannot send email notification.")
         return False
 
-    # 1. Build dynamic template parameters (Must match EmailJS template placeholders!)
-    template_params = {
-        "to_email": to_email,
-        "customer_name": customer_name or "Customer",
-        "ticket_subject": subject,
-        # Use the fixed SENDER_NAME "echo-mid" for the agent name
-        "agent_name": SENDER_NAME, 
-        "message_body": body, 
-        "from_email": SENDER_EMAIL
-    }
-
-    # 2. Construct the API payload
-    payload = {
-        "service_id": EMAILJS_SERVICE_ID,
-        "template_id": EMAILJS_TEMPLATE_ID_FINAL, # Always use the single resolution template
-        "user_id": EMAILJS_PUBLIC_KEY,
-        "accessToken": EMAILJS_PRIVATE_KEY, # Secure Private Key for server-side
-        "template_params": template_params
-    }
-    
     try:
-        # Use httpx to make an asynchronous POST request
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                EMAILJS_API_URL, 
-                json=payload
-            )
+        # 1. Construct the MIME message
+        final_body = (
+            f"Dear {customer_name or 'Customer'},\n\n"
+            f"Subject: {subject}\n\n"
+            f"{body}\n\n"
+            f"Regards,\n{SENDER_NAME} Team"
+        )
+        
+        msg = MIMEText(final_body, 'plain', 'utf-8')
+        msg['Subject'] = subject
+        msg['From'] = formataddr((SENDER_NAME, SENDER_EMAIL))
+        msg['To'] = to_email
 
-        if response.status_code == 200 and response.text == "OK":
-            logging.info(f"✅ SUCCESS: Email sent via EmailJS API. Template: {EMAILJS_TEMPLATE_ID_FINAL}")
-            return True
-        else:
-            logging.error(f"EmailJS API Failed. Status: {response.status_code}, Response: {response.text}")
-            return False
-
+        # 2. Send the message using aiosmtplib
+        await aiosmtplib.send(
+            msg,
+            hostname=SMTP_SERVER,      # smtp.sendgrid.net
+            port=SMTP_PORT,            # 587
+            username=SMTP_USERNAME,    # apikey
+            password=SMTP_PASSWORD,    # [API Key]
+            use_tls=True,              # Required for security
+            start_tls=True if SMTP_PORT == 587 else False
+        )
+        
+        logging.info(f"✅ SUCCESS: Email sent via SendGrid SMTP to {to_email}.")
+        return True
+    
+    except aiosmtplib.SMTPException as e:
+        logging.error(f"SMTP Error (SendGrid) sending email to {to_email}: {e}")
+        return False
     except Exception as e:
-        logging.error(f"HTTP Error calling EmailJS: {e}")
+        logging.error(f"General Email Error sending to {to_email}: {e}")
         return False
         
 # -------------------------

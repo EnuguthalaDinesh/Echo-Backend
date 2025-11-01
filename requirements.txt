@@ -16,7 +16,4 @@ email-validator      # For Pydantic EmailStr validation
 # --- AI and OAuth ---
 google-generativeai  # For Gemini API calls
 authlib              # For Google/GitHub OAuth
-
-# --- Email ---
-# NOTE: Removed aiosmtplib, as we switched to EmailJS via httpx
-# NOTE: Removed aiohttp, as httpx is generally preferred and cleaner for this use case.
+aiosmtplib
