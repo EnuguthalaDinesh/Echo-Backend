@@ -1,15 +1,22 @@
+# --- Core Framework and Async ---
 fastapi
-uvicorn[standard]     # <-- FIX: Added [standard] for WebSocket support
+uvicorn[standard]  # For ASGI server and WebSocket support
 python-dotenv
-pydantic
-motor
-bcrypt
-python-jose[cryptography]
-redis
-google-generativeai
-transformers
-torch
-authlib
-httpx
-email-validator
-aiohttp
+httpx                # For EmailJS API calls
+
+# --- Authentication and Security ---
+bcrypt               # Required for password hashing
+python-jose[cryptography] # Required for JWT (access/refresh tokens)
+
+# --- Database Drivers ---
+motor                # Asynchronous MongoDB driver
+redis                # Asynchronous Redis driver
+email-validator      # For Pydantic EmailStr validation
+
+# --- AI and OAuth ---
+google-generativeai  # For Gemini API calls
+authlib              # For Google/GitHub OAuth
+
+# --- Email ---
+# NOTE: Removed aiosmtplib, as we switched to EmailJS via httpx
+# NOTE: Removed aiohttp, as httpx is generally preferred and cleaner for this use case.
