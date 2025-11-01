@@ -1078,16 +1078,31 @@ async def oauth_callback(provider: str, request: Request):
     if provider not in ("google", "github"):
         raise HTTPException(400, "Unsupported provider")
     client = oauth.create_client(provider)
-    # This line relies on SessionMiddleware being active
+    
+    # Authlib step 1: Authorize access token and get response (which might or might not contain id_token)
     token = await client.authorize_access_token(request) 
+    
     email = None
     name = None
 
     if provider == "google":
-        user_info = await client.parse_id_token(request, token)
+        # --- CRITICAL FIX START: Handle missing id_token ---
+        # Instead of failing on token['id_token'], we use the access token 
+        # to fetch user information directly from Google's userinfo endpoint.
+        try:
+            # Use the access token to get the user's detailed profile
+            user_info_resp = await client.get('https://www.googleapis.com/oauth2/v3/userinfo', token=token)
+            user_info_resp.raise_for_status() 
+            user_info = user_info_resp.json()
+        except Exception as e:
+            logging.error(f"Google user info fetch failed: {e}")
+            raise HTTPException(status_code=500, detail="Failed to retrieve Google user profile.")
+            
         email = user_info.get("email")
         name = user_info.get("name") or (email.split("@")[0] if email else "")
-    else:
+        # --- CRITICAL FIX END ---
+        
+    else: # GitHub logic remains the same
         resp = await client.get("user", token=token)
         data = resp.json()
         name = data.get("name") or data.get("login")
@@ -1109,7 +1124,7 @@ async def oauth_callback(provider: str, request: Request):
         assigned_role = assign_role_by_name(name) if name else "user"
         
         new_user = {
-            "id": str(uuid.uuid4()), # Use uuid for consistent external ID, MongoDB generates _id
+            # Relying on MongoDB to generate _id
             "name": name or email.split("@")[0],
             "email": email,
             "hashed_password": None, 
