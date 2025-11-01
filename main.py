@@ -273,7 +273,8 @@ async def _call_gemini(prompt_text: str, *, temperature: float = 0.7, max_output
         # Older helper
         if hasattr(genai, "generate_text"):
             def sync_generate():
-                return genai.generate_generate_text(model=GEMINI_MODEL_NAME, prompt=prompt_text)
+                # NOTE: Changed from genai.generate_generate_text to genai.generate_text
+                return genai.generate_text(model=GEMINI_MODEL_NAME, prompt=prompt_text) 
             resp = await loop.run_in_executor(None, sync_generate)
             if hasattr(resp, "text") and resp.text:
                 return resp.text
@@ -825,11 +826,18 @@ class ChatMessage(BaseModel):
     timestamp: str
 
 class HistoryMessage(BaseModel):
+    # CRITICAL: If frontend expects '_id' as ID, it must be aliased here
+    id: str = Field(..., alias="_id")
     session_id: str
     role: str
     content: str
     timestamp: datetime # Use datetime for precise time display
     meta: Optional[Dict] = {}
+    
+    class Config:
+        # Allows conversion from MongoDB's '_id' to the 'id' field
+        json_encoders = {ObjectId: str}
+        populate_by_name = True
 
 class CustomerProfile(BaseModel):
     customer_id: str
@@ -1168,6 +1176,15 @@ def assign_role_by_name(name: str) -> str:
     # Default role
     return "user"
 
+# --- NEW HELPER FUNCTION for Consistent ID Retrieval ---
+def get_user_mongo_id(user_doc: Dict) -> str:
+    """Safely retrieves the primary MongoDB ObjectId string from a user document."""
+    # Prioritize the MongoDB _id
+    if user_doc.get("_id"):
+        return str(user_doc["_id"])
+    # Fallback to the deprecated 'id' field if _id is missing
+    return user_doc.get("id", "no-id")
+# -----------------------------------------------------
 
 # -------------------------
 # Auth Endpoints (Email/Password) 
@@ -1222,13 +1239,7 @@ async def login(request: LoginRequest):
     
     # Retrieve stored role and customer ID
     user_role = user.get("role", "user") 
-    # CRITICAL: Use MongoDB _id if 'id' field is missing
-    customer_id = str(user.get("_id", "no-id"))
-    if not customer_id.startswith('no-id') and len(customer_id) == 24 and ObjectId.is_valid(customer_id):
-        # The ObjectId is the true unique ID
-        pass
-    elif user.get("id"):
-        customer_id = user.get("id")
+    customer_id = get_user_mongo_id(user) # Use the new helper function
     
     accesstoken = create_access_token(data={"sub": user["email"]}) 
     refreshtoken = create_refresh_token(data={"sub": user["email"]}) 
@@ -1261,9 +1272,9 @@ async def refresh_token(refresh_token: str = Body(..., embed=True)):
 @app.get("/me")
 async def me(current_user: Optional[Dict] = Depends(get_current_user)):
     if not current_user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
         
-    customer_id = str(current_user["_id"]) if current_user.get("_id") else current_user.get("id", "no-id")
+    customer_id = get_user_mongo_id(current_user) # Use the new helper function
     return {
         "id": customer_id, 
         "name": current_user["name"], 
@@ -1272,7 +1283,54 @@ async def me(current_user: Optional[Dict] = Depends(get_current_user)):
     }
 
 # -------------------------
-# NEW: Dynamic Customer Profile Endpoint
+# NEW: History Endpoints (FIX for 404)
+# -------------------------
+@app.get("/history", response_model=List[HistoryMessage])
+async def get_user_chat_history(
+    current_user: Dict = Depends(get_current_user), 
+):
+    """
+    Retrieves the persistent chat history for the currently authenticated user.
+    The frontend calls this endpoint to display past sessions.
+    """
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    chat_history_col = getattr(app.state, "chat_history_collection", None)
+    
+    if chat_history_col is None:
+        logging.error("chat_history_collection not configured; cannot fetch history.")
+        return [] 
+        
+    # The session_id in the collection is expected to match the customer's MongoDB ObjectId string
+    customer_id = get_user_mongo_id(current_user)
+    
+    if customer_id == "no-id":
+        logging.warning(f"User {current_user.get('email')} has no valid ID for history query.")
+        return []
+    
+    try:
+        # Retrieve all messages where the 'session_id' matches the user's ID.
+        # This assumes the user's primary ID is consistently used as the session_id
+        # in the `save_chat_history_message` helper function.
+        cursor = chat_history_col.find(
+            {"session_id": customer_id}
+        ).sort("timestamp", 1) 
+        
+        # NOTE: Using to_list is common for small collections, but be mindful of memory for large sets.
+        history_list = await cursor.to_list(length=1000)
+            
+        logging.info(f"Retrieved {len(history_list)} history messages for user {customer_id}.")
+        
+        # Pydantic will serialize the list using the HistoryMessage model
+        return history_list
+
+    except Exception as e:
+        logging.error(f"Error fetching user chat history for {customer_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve chat history.")
+
+# -------------------------
+# Dynamic Customer Profile Endpoint
 # -------------------------
 @app.get("/customer/{customer_id}/profile")
 async def get_customer_profile(
