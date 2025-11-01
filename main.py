@@ -51,7 +51,7 @@ load_dotenv()
 # -------------------------
 # Config
 # -------------------------
-VERCEL_FRONTEND_ORIGIN = os.getenv("VERCEL_FRONTEND_ORIGIN", "https://echo-frontend-5r3l.vercel.app/")
+VERCEL_FRONTEND_ORIGIN = os.getenv("VERCEL_FRONTEND_ORIGIN", "https://echo-frontend-5r3l.vercel.app")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://echo-backend-1-ubeb.onrender.com")
 
 # -------------------------
