@@ -4,12 +4,10 @@ import json
 import logging
 import asyncio
 import re
-# REMOVED: import smtplib # No longer needed for EmailJS
+# Removed: import smtplib, email.mime.text, email.utils (No longer needed for EmailJS)
 import bcrypt 
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple, Dict, Union 
-# REMOVED: from email.mime.text import MIMEText # No longer needed
-# REMOVED: from email.utils import formataddr # No longer needed
 
 # --- ADDED FOR EMAILJS API ---
 import httpx 
@@ -48,7 +46,7 @@ load_dotenv()
 # -------------------------
 # Config
 # -------------------------
-VERCEL_FRONTEND_ORIGIN = "https://echo-frontend-2d4z.vercel.app" 
+VERCEL_FRONTEND_ORIGIN = os.getenv("VERCEL_FRONTEND_ORIGIN", "https://echo-frontend-2d4z.vercel.app")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://echo-backend-1-ubeb.onrender.com")
 
 # -------------------------
@@ -210,27 +208,7 @@ def check_critical_issue(user_query: str, sentiment: str) -> bool:
     text = user_query.lower()
     
     # TIER 1: High-Security/Immediate Action (returns True regardless of sentiment)
-    HIGH_SECURITY_KWS = ["reset password", "change login", "account blocked", "fraud", "security issue",
-    "account compromised", "stolen", "unauthorized access", "hacked", "phishing",
-    "stolen card", "data breach", "sim swap", "credential stuffing","not working", "completely down", "system failure", "major outage", "global outage", 
-    "broken", "crashed", "frozen", "inoperable", "unresponsive", "unusable", "malfunction",
-    "error 500", "fatal error", "critical bug", "server error", "API failure", "network down",
-    "can't connect", "no access", "locked out", "system exploited",
-    "data loss", "deleted", "corrupted", "lost all my progress", 
-    "denial of service", "DDoS", "virus", "malware", "ransomware", "system infected",
-    "zero-day", "vulnerability exposed", "system patch failed","money lost", "loss of funds", "dispute charge", "unauthorized payment", 
-    "unauthorized transaction", "immediate refund", "overcharged", "excessive fee", 
-    "billing error", "incorrect statement", "identity theft", "frozen account", 
-    "locked funds", "transfer failed", "payment bounced", "repossession", "foreclosure",
-    "close credit card", "cancel payment", "tax issue", "IRS",
-    "wire transfer failed", "large transaction blocked", "negative balance alert","missed flight", "stuck at airport", "cannot board", "denied boarding", 
-    "visa rejected", "customs issue", "immigration problem", "denied entry", 
-    "deportation", "illness", "injury", "medical emergency", "police involved",
-    "stranded overseas", "unsafe location", "security threat",
-    "delayed more than 5 hours", "cancelled last minute", "hotel won't honor",
-    "lost passport", "stolen tickets", "no transport", "emergency evacuation", 
-    "overbooked", "no room available", "transport failure", "booking vanished",
-    "baggage lost critical", "flight grounding", "natural disaster"]
+    HIGH_SECURITY_KWS = ["reset password", "change login", "account blocked", "fraud", "security issue"]
     if any(kw in text for kw in HIGH_SECURITY_KWS):
         return True
 
@@ -1159,7 +1137,7 @@ async def register(user: UserRegister):
     assigned_role = assign_role_by_name(user.name)
     
     new_user = {
-        "id": str(uuid.uuid4()),
+        # CRITICAL FIX: Relying on MongoDB to generate _id, removing redundant UUID
         "name": user.name,
         "email": user.email,
         "hashed_password": get_password_hash(user.password),
@@ -1168,415 +1146,21 @@ async def register(user: UserRegister):
     }
     
     result = await users_col.insert_one(new_user)
-    # The MongoDB ID should be used as the internal customer_id
-    customer_id = str(result.inserted_id)
+    
+    # Use the MongoDB ObjectId string as customer_id
+    customer_id = str(result.inserted_id) 
     
     logging.info(f"New user registered: {user.email} with role: {assigned_role}. Stored ID: {customer_id}")
     
     r = await get_redis()
     if r:
         try:
-            await r.set(f"user:{user.email}", customer_id)
+            # Store the native MongoDB ID string for consistency
+            await r.set(f"user:{user.email}", customer_id) 
         except Exception as e:
             logging.warning(f"Redis set failed (non-blocking): {e}")
             
-    # Return the role for immediate frontend usage
-    return {"ok": True, "customer_id": customer_id, "role": assigned_role} 
-
-@app.post("/login")
-async def login(request: LoginRequest):
-    user = await get_user_by_email_mongo(request.email)
-    
-    # This call now uses the new verify_password with 72-byte truncation
-    if not user or not user.get("hashed_password") or not verify_password(request.password, user.get("hashed_password")):
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
-    
-    # Retrieve stored role and customer ID
-    user_role = user.get("role", "user") 
-    customer_id = user.get("id") or str(user.get("_id", "no-id")) 
-    
-    accesstoken = create_access_token(data={"sub": user["email"]}) 
-    refreshtoken = create_refresh_token(data={"sub": user["email"]}) 
-    
-    logging.info(f"User logged in: {user['email']} with role: {user_role}")
-    
-    return {
-        "access_token": accesstoken,
-        "token_type": "bearer",
-        "refresh_token": refreshtoken,
-        "id": customer_id, 
-        "role": user_role,
-        "name": user.get("name"),
-        "email": user.get("email")
-    }
-
-@app.post("/refresh", response_model=Token)
-async def refresh_token(refresh_token: str = Body(..., embed=True)):
-    try:
-        payload = jwt.decode(refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
-        email = payload.get("sub")
-        if not email:
-            raise HTTPException(401, "Invalid refresh token")
-        new_access = create_access_token({"sub": email})
-        new_refresh = create_refresh_token({"sub": email})
-        return {"access_token": new_access, "token_type": "bearer", "refresh_token": new_refresh}
-    except JWTError:
-        raise HTTPException(401, "Invalid refresh token")
-
-@app.get("/me")
-async def me(current_user: Optional[Dict] = Depends(get_current_user)):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-        
-    customer_id = current_user.get("id") or str(current_user["_id"])
-    return {
-        "id": customer_id, 
-        "name": current_user["name"], 
-        "email": current_user["email"],
-        "role": current_user.get("role", "user") 
-    }
-
-# -------------------------
-# NEW: Dynamic Customer Profile Endpoint
-# -------------------------
-@app.get("/customer/{customer_id}/profile")
-async def get_customer_profile(
-    customer_id: str,
-    current_user: Dict = Depends(get_current_agent_or_admin) # Secure this endpoint
-):
-    """Retrieves dynamic profile information for a given customer ID."""
-    users_col = getattr(app.state, "users_collection", None)
-    if users_col is None:
-        raise HTTPException(status_code=500, detail="User database not available.")
-
-    try:
-        # Determine the query ID (MongoDB ObjectId or external 'id' field)
-        is_valid_object_id = len(customer_id) == 24 and ObjectId.is_valid(customer_id)
-        query_id = ObjectId(customer_id) if is_valid_object_id else customer_id
-
-        # Search by _id (if ObjectId) or by the 'id' field (if UUID string)
-        customer_doc = await users_col.find_one(
-            {"$or": [{"_id": query_id}, {"id": customer_id}]},
-            # Only project safe, relevant fields
-            {"email": 1, "name": 1, "created_at": 1, "role": 1}
-        )
-
-        if not customer_doc:
-            raise HTTPException(status_code=404, detail="Customer not found.")
-
-        # Simulate dynamic/calculated data based on the user object
-        customer_profile = {
-            "name": customer_doc.get("name", "N/A"),
-            "email": customer_doc.get("email", "N/A"),
-            # Tier based on role for demo, 'admin' is considered high-value/VIP
-            "tier": "VIP" if customer_doc.get("role") in ["admin", "agent"] else "Standard",
-            "join_date": customer_doc.get("created_at", datetime.min).isoformat(),
-            # Placeholder for sentiment, requires querying the chat_history collection
-            "last_sentiment": "Neutral 😐", 
-        }
-
-        return customer_profile
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logging.error(f"Error fetching customer profile: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error fetching profile.")
-
-# -------------------------
-# Helper: Save Case in MongoDB 
-# -------------------------
-async def save_case_message(col, case_id, case_doc, user_msg, bot_msg, escalated_flag, now):
-    existing = await col.find_one({"_id": case_id})
-    if not existing:
-        # Insert new case
-        case_doc["conversation_history"] = [user_msg, bot_msg]
-        case_doc["created_at"] = datetime.utcnow()
-        await col.insert_one(case_doc)
-    else:
-        # Update existing case
-        await col.update_one(
-            {"_id": case_id},
-            {
-                "$push": {"conversation_history": {"$each": [user_msg, bot_msg]}},
-                "$set": {"last_updated": now, "escalated": escalated_flag},
-            },
-        )
-    logging.info(f"🔄 Case updated/created in MongoDB: {case_id}")
-
-# -------------------------
-# Save single chat messages into chat_history collection 
-# -------------------------
-async def save_chat_history_message(session_id: str, role: str, content: str, meta: Optional[Dict] = None):
-    """
-    Stores a single message (user or bot) into app.state.chat_history_collection
-    """
-    col = getattr(app.state, "chat_history_collection", None)
-    if col is None:
-        logging.debug("chat_history_collection not configured; skipping save_chat_history_message")
-        return
-    doc = {
-        "session_id": session_id,
-        "role": role,
-        "content": content,
-        "meta": meta or {},
-        "timestamp": datetime.utcnow(),
-    }
-    try:
-        await col.insert_one(doc)
-    except Exception as e:
-        logging.warning(f"Failed to save chat history message: {e}")
-
-# Helper function to get ticket details (used for email context)
-async def get_ticket(ticket_id: str) -> Optional[Dict]:
-    col = getattr(app.state, "tickets_collection", None)
-    if col is None:
-        return None
-    try:
-        is_valid_object_id = len(ticket_id) == 24 and ObjectId.is_valid(ticket_id)
-        query_id = ObjectId(ticket_id) if is_valid_object_id else ticket_id
-        ticket_doc = await col.find_one({"$or": [{"_id": query_id}, {"id": ticket_id}]})
-        
-        if ticket_doc:
-            ticket_doc["_id"] = str(ticket_doc["_id"])
-        return ticket_doc
-    except Exception as e:
-        logging.error(f"Error fetching ticket for email context: {e}")
-        return None
-    
-# Helper function to get customer email
-async def get_customer_email(customer_id: str) -> Tuple[Optional[str], Optional[str]]:
-    """Retrieves customer email and name from the users collection."""
-    col = getattr(app.state, "users_collection", None)
-    if col is None:
-        return None, None
-    
-    try:
-        is_valid_object_id = len(customer_id) == 24 and ObjectId.is_valid(customer_id)
-        query_id = ObjectId(customer_id) if is_valid_object_id else customer_id
-
-        # Search by _id (if valid ObjectId) or by the 'id' field (if string UUID)
-        customer_doc = await col.find_one({"$or": [{"_id": query_id}, {"id": customer_id}]}, {"email": 1, "name": 1})
-        
-        if customer_doc:
-            return customer_doc.get("email"), customer_doc.get("name")
-        return None, None
-        
-    except Exception as e:
-        logging.error(f"Error fetching customer email for ID {customer_id}: {e}")
-        return None, None
-
-# Async Email Sending Function (REAL IMPLEMENTATION using EmailJS API)
-async def send_email_notification(
-    to_email: str, 
-    subject: str, 
-    body: str, 
-    customer_name: Optional[str] = None, 
-    is_resolution: bool = False 
-):
-    """
-    Sends an email via the EmailJS REST API using the Resolution template.
-    The sender's name is fixed to 'echo-mid'.
-    """
-    if not all([EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID_FINAL, EMAILJS_PUBLIC_KEY, EMAILJS_PRIVATE_KEY]):
-        logging.warning("EmailJS configuration incomplete. Cannot send email.")
-        return False
-
-    # 1. Build dynamic template parameters (Must match EmailJS template placeholders!)
-    template_params = {
-        "to_email": to_email,
-        "customer_name": customer_name or "Customer",
-        "ticket_subject": subject,
-        # Use the fixed SENDER_NAME "echo-mid" for the agent name
-        "agent_name": SENDER_NAME, 
-        "message_body": body, 
-        "from_email": SENDER_EMAIL
-    }
-
-    # 2. Construct the API payload
-    payload = {
-        "service_id": EMAILJS_SERVICE_ID,
-        "template_id": EMAILJS_TEMPLATE_ID_FINAL, # Always use the single resolution template
-        "user_id": EMAILJS_PUBLIC_KEY,
-        "accessToken": EMAILJS_PRIVATE_KEY, # Secure Private Key for server-side
-        "template_params": template_params
-    }
-    
-    try:
-        # Use httpx to make an asynchronous POST request
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                EMAILJS_API_URL, 
-                json=payload
-            )
-
-        if response.status_code == 200 and response.text == "OK":
-            logging.info(f"✅ SUCCESS: Email sent via EmailJS API. Template: {EMAILJS_TEMPLATE_ID_FINAL}")
-            return True
-        else:
-            logging.error(f"EmailJS API Failed. Status: {response.status_code}, Response: {response.text}")
-            return False
-
-    except Exception as e:
-        logging.error(f"HTTP Error calling EmailJS: {e}")
-        return False
-        
-# -------------------------
-# FastAPI App
-# -------------------------
-app = FastAPI(
-    title="Customer Support Chatbot Backend (Hybrid: Mongo + Redis + Gemini + OAuth + Intent)",
-    version="1.5.0",
-)
-
-# --- FIX: ROBUST CORS CONFIGURATION ---
-ALLOWED_ORIGINS = [
-    VERCEL_FRONTEND_ORIGIN,
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:8000"
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-# -------------------------------------
-
-
-# -------------------------
-# Pydantic Models 
-# -------------------------
-class UserBase(BaseModel):
-    name: str
-    email: EmailStr
-
-class UserRegister(UserBase):
-    password: str
-
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    refresh_token: Optional[str] = None
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-    timestamp: str
-
-class HistoryMessage(BaseModel):
-    session_id: str
-    role: str
-    content: str
-    timestamp: datetime # Use datetime for precise time display
-    meta: Optional[Dict] = {}
-
-class CustomerProfile(BaseModel):
-    customer_id: str
-    previous_interactions: List[str] = []
-    purchase_history: List[str] = []
-    preference_settings: dict = {}
-    sentiment_history: List[str] = []
-    active_case_id: Optional[str] = None
-
-class ChatRequest(BaseModel):
-    user_query: str
-    session_id: str
-    customer_profile: CustomerProfile
-    conversation_history: List[ChatMessage] = []
-    domain: str 
-
-class ChatResponse(BaseModel):
-    bot_response: str
-    case_status: str = "open"
-    case_id: Optional[str] = None
-    faq_suggestion: Optional[str] = None
-    sentiment_detected: Optional[str] = None
-    predicted_domain: Optional[str] = None
-    intent_confidence: Optional[float] = None
-    intent_source: Optional[str] = None
-
-class TicketCreate(BaseModel):
-    customer_id: str
-    subject: str
-    description: Optional[str] = None
-
-# MODIFIED: Model to include the final resolution message
-class TicketResolution(BaseModel):
-    status: str = Field(..., description="Must be 'resolved' to include resolution_message.")
-    resolution_message: Optional[str] = Field(None, description="The final message sent to the customer explaining the resolution.")
-
-class HistorySummaryResponse(BaseModel):
-    session_id: str
-    summary: str
-
-class NewFaqEntry(BaseModel):
-    domain: str
-    keywords: List[str]
-    answer: str
-
-# NEW: Model for Admin User List
-class AdminUserResponse(BaseModel):
-    id: str = Field(..., alias="_id")
-    name: str
-    email: EmailStr
-    role: str
-    created_at: datetime
-    # Allows Pydantic to handle ObjectId conversion
-    class Config:
-        json_encoders = {ObjectId: str}
-        allow_population_by_field_name = True
-
-# NEW: Model for Role Update
-class RoleUpdate(BaseModel):
-    new_role: str
-    
-# -------------------------
-# Auth Endpoints (Email/Password) 
-# -------------------------
-@app.post("/register")
-async def register(user: UserRegister): 
-    users_col = getattr(app.state, "users_collection", None)
-    if users_col is None:
-        raise HTTPException(status_code=500, detail="User database not available")
-
-    exists = await get_user_by_email_mongo(user.email)
-    if exists:
-        raise HTTPException(status_code=409, detail="Email already registered")
-        
-    # --- CRITICAL FIX: SAVING ROLE ---
-    assigned_role = assign_role_by_name(user.name)
-    
-    new_user = {
-        "id": str(uuid.uuid4()),
-        "name": user.name,
-        "email": user.email,
-        "hashed_password": get_password_hash(user.password),
-        "role": assigned_role, 
-        "created_at": datetime.utcnow(),
-    }
-    
-    result = await users_col.insert_one(new_user)
-    # The MongoDB ID should be used as the internal customer_id
-    customer_id = str(result.inserted_id)
-    
-    logging.info(f"New user registered: {user.email} with role: {assigned_role}. Stored ID: {customer_id}")
-    
-    r = await get_redis()
-    if r:
-        try:
-            await r.set(f"user:{user.email}", customer_id)
-        except Exception as e:
-            logging.warning(f"Redis set failed (non-blocking): {e}")
-            
-    # Return the role for immediate frontend usage
+    # Return the MongoDB ObjectId string as customer_id
     return {"ok": True, "customer_id": customer_id, "role": assigned_role} 
 
 @app.post("/login")
