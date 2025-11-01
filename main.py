@@ -11,7 +11,7 @@ from typing import List, Optional, Tuple, Dict, Union
 from email.mime.text import MIMEText 
 from email.utils import formataddr 
 
-import aiosmtplib # <-- ADDED for async SMTP
+import aiosmtplib 
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, status, Body, Request, WebSocket, WebSocketDisconnect
@@ -19,6 +19,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse
 from pydantic import BaseModel, EmailStr, Field 
 from bson import ObjectId
+
+# --- CRITICAL NEW IMPORT for OAuth Session ---
+from starlette.middleware.sessions import SessionMiddleware
+# ---------------------------------------------
 
 # --- Gemini ---
 import google.generativeai as genai
@@ -47,7 +51,7 @@ load_dotenv()
 # -------------------------
 # Config
 # -------------------------
-VERCEL_FRONTEND_ORIGIN = os.getenv("VERCEL_FRONTEND_ORIGIN", "https://echo-frontend-2d4z.vercel.app")
+VERCEL_FRONTEND_ORIGIN = os.getenv("VERCEL_FRONTEND_ORIGIN", "https://echo-frontend-5r3l.vercel.app/")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://echo-backend-1-ubeb.onrender.com")
 
 # -------------------------
@@ -697,7 +701,7 @@ async def get_customer_email(customer_id: str) -> Tuple[Optional[str], Optional[
         # Search by _id (if valid ObjectId) or by the 'id' field (if string UUID)
         customer_doc = await col.find_one({"$or": [{"_id": query_id}, {"id": customer_id}]}, {"email": 1, "name": 1})
         
-        # NEW FIX: Fallback lookup by email address (for tickets linked by email)
+        # FIX: Fallback lookup by email address (for tickets linked by email)
         if not customer_doc and "@" in customer_id:
             customer_doc = await col.find_one({"email": customer_id}, {"email": 1, "name": 1})
 
@@ -768,6 +772,12 @@ app = FastAPI(
     title="Customer Support Chatbot Backend (Hybrid: Mongo + Redis + Gemini + OAuth + Intent)",
     version="1.5.0",
 )
+
+# --- CRITICAL FIX: Add Session Middleware for Authlib/OAuth ---
+# The SECRET_KEY is necessary to securely sign the session cookie.
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY) 
+# -------------------------------------------------------------
+
 
 # --- FIX: ROBUST CORS CONFIGURATION ---
 ALLOWED_ORIGINS = [
@@ -1060,6 +1070,7 @@ async def oauth_login(provider: str, request: Request):
         raise HTTPException(400, "Unsupported provider")
     redirect_uri = f"{API_BASE_URL}/auth/{provider}/callback"
     client = oauth.create_client(provider)
+    # This line now relies on SessionMiddleware being active
     return await client.authorize_redirect(request, redirect_uri)
 
 @app.get("/auth/{provider}/callback")
@@ -1067,7 +1078,8 @@ async def oauth_callback(provider: str, request: Request):
     if provider not in ("google", "github"):
         raise HTTPException(400, "Unsupported provider")
     client = oauth.create_client(provider)
-    token = await client.authorize_access_token(request)
+    # This line relies on SessionMiddleware being active
+    token = await client.authorize_access_token(request) 
     email = None
     name = None
 
@@ -1367,7 +1379,7 @@ async def update_ticket_status(
         
     try:
         is_valid_object_id = len(ticket_id) == 24 and ObjectId.is_valid(ticket_id)
-        query_id = ObjectId(ticket_id) if is_valid_object_id else ticket_id
+        query_id = ObjectId(ticket_id) if is_valid_object_id else query_id
 
         # Prepare update operation
         update_op = {"$set": {"status": new_status, "updated_at": datetime.utcnow()}}
