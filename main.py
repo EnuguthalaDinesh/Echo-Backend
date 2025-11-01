@@ -51,7 +51,9 @@ load_dotenv()
 # -------------------------
 # Config
 # -------------------------
-VERCEL_FRONTEND_ORIGIN = os.getenv("VERCEL_FRONTEND_ORIGIN", "https://echo-frontend-5r3l.vercel.app")
+# Use a default URL, and ensure we strip the slash to match standard browser requests
+VERCEL_FRONTEND_ORIGIN_RAW = os.getenv("VERCEL_FRONTEND_ORIGIN", "https://echo-frontend-5r3l.vercel.app/")
+VERCEL_FRONTEND_ORIGIN = VERCEL_FRONTEND_ORIGIN_RAW.rstrip('/')
 API_BASE_URL = os.getenv("API_BASE_URL", "https://echo-backend-1-ubeb.onrender.com")
 
 # -------------------------
@@ -782,6 +784,7 @@ app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 # --- FIX: ROBUST CORS CONFIGURATION ---
 ALLOWED_ORIGINS = [
     VERCEL_FRONTEND_ORIGIN,
+    VERCEL_FRONTEND_ORIGIN + "/", # Added to explicitly handle trailing slash (though stripping above is better)
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:8000"
@@ -1219,7 +1222,13 @@ async def login(request: LoginRequest):
     
     # Retrieve stored role and customer ID
     user_role = user.get("role", "user") 
-    customer_id = user.get("id") or str(user.get("_id", "no-id")) 
+    # CRITICAL: Use MongoDB _id if 'id' field is missing
+    customer_id = str(user.get("_id", "no-id"))
+    if not customer_id.startswith('no-id') and len(customer_id) == 24 and ObjectId.is_valid(customer_id):
+        # The ObjectId is the true unique ID
+        pass
+    elif user.get("id"):
+        customer_id = user.get("id")
     
     accesstoken = create_access_token(data={"sub": user["email"]}) 
     refreshtoken = create_refresh_token(data={"sub": user["email"]}) 
@@ -1254,7 +1263,7 @@ async def me(current_user: Optional[Dict] = Depends(get_current_user)):
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
         
-    customer_id = current_user.get("id") or str(current_user["_id"])
+    customer_id = str(current_user["_id"]) if current_user.get("_id") else current_user.get("id", "no-id")
     return {
         "id": customer_id, 
         "name": current_user["name"], 
@@ -1394,7 +1403,8 @@ async def update_ticket_status(
         
     try:
         is_valid_object_id = len(ticket_id) == 24 and ObjectId.is_valid(ticket_id)
-        query_id = ObjectId(ticket_id) if is_valid_object_id else query_id
+        # CRITICAL FIX APPLIED HERE: Define query_id correctly
+        query_id = ObjectId(ticket_id) if is_valid_object_id else ticket_id
 
         # Prepare update operation
         update_op = {"$set": {"status": new_status, "updated_at": datetime.utcnow()}}
